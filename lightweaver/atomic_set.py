@@ -17,15 +17,7 @@ class SpectrumConfiguration:
     transitions: List[Union[AtomicLine, AtomicContinuum]]
     models: List[AtomicModel]
     blueIdx: List[int]
-    # redIdx: List[int]
     activeSet: List[List[Union[AtomicLine, AtomicContinuum]]]
-    # activeLines: List[List[AtomicLine]]
-    # activeContinua: List[List[AtomicContinuum]]
-    # contributors: List[List[AtomicModel]]
-    # continuaPerAtom: Dict[str, List[List[AtomicContinuum]]]
-    # linesPerAtom: Dict[str, List[List[AtomicLine]]]
-    # lowerLevels: Dict[str, List[Set[int]]]
-    # upperLevels: Dict[str, List[Set[int]]]
 
     def subset_configuration(self, wavelengths, expandLineGridsNm=0.0) -> 'SpectrumConfiguration':
         Nblue = np.searchsorted(self.wavelength, wavelengths[0])
@@ -126,9 +118,6 @@ def lte_pops(atomicModel, atmos, nTotal, debye=True):
             for m in range(1, stage - atomicModel.levels[0].stage + 1):
                 nDebye[i] += Z
                 Z += 1
-    # print(atomicModel.name)
-    # print([l.stage for l in atomicModel.levels])
-    # print(nDebye)
 
     dEion = c2 * np.sqrt(atmos.ne / atmos.temperature)
     cNe_T = 0.5 * atmos.ne * (c1 / atmos.temperature)**1.5
@@ -148,8 +137,6 @@ def lte_pops(atomicModel, atmos, nTotal, debye=True):
         nst = gi0 * np.exp(-dE_kT)
         nStar[i, :] = nst
         nStar[i, :] /= cNe_T**dZ
-        # for m in range(1, dZ + 1):
-        #     nStar[i, :] /= cNe_T
         total += nStar[i]
 
     nStar[0] = nTotal / total
@@ -245,7 +232,6 @@ class AtomicState:
         self.pops = val
 
     def fjk(self, atmos, k):
-        # Nstage: int = (self.model.levels[-1].stage - self.model.levels[0].stage) + 1
         Nstage: int = self.model.levels[-1].stage + 1
 
         fjk = np.zeros(Nstage)
@@ -260,7 +246,6 @@ class AtomicState:
         return fjk, dfjk
 
     def fj(self, atmos):
-        # Nstage: int = (self.model.levels[-1].stage - self.model.levels[0].stage) + 1
         Nstage: int = self.model.levels[-1].stage + 1
         Nspace: int = atmos.depthScale.shape[0]
 
@@ -281,30 +266,16 @@ class SpeciesStateTable:
     atmosphere: Atmosphere
     atomicTable: AtomicTable
     atomicPops: AtomicStateTable
-    molecularTable: MolecularTable
-    molecularPops: List[np.ndarray]
-    HminPops: np.ndarray
 
     def __getitem__(self, name: str) -> np.ndarray:
-        if name == 'H-':
-            return self.HminPops
+        if name in self.atomicPops:
+            return self.atomicPops[name].n
         else:
-            if name in self.molecularTable:
-                key = self.molecularTable.indices[name]
-                return self.molecularPops[key]
-            elif name in self.atomicPops:
-                return self.atomicPops[name].n
-            else:
-                raise KeyError('Unknown key: %s' % name)
+            raise KeyError('Unknown key: %s' % name)
 
     def __contains__(self, name: Union[str, AtomicModel]) -> bool:
         if isinstance(name, AtomicModel):
             name = name.name
-        if name == 'H-':
-            return True
-        
-        if name in self.molecularTable:
-            return True
 
         if name in self.atomicPops:
             return True
@@ -314,12 +285,7 @@ class SpeciesStateTable:
     def atomic_population(self, name: str) -> np.ndarray:
         return self.atomicPops[name].n
 
-    def molecular_population(self, name: str) -> np.ndarray:
-        name = name.upper()
-        key = self.molecularTable.indices[name]
-        return self.molecularPops[key]
-
-    def update_lte_atoms_Hmin_pops(self, atmos: Atmosphere, conserveCharge=False, updateTotals=False):
+    def update_lte_pops(self, atmos: Atmosphere, conserveCharge=False, updateTotals=False):
         maxIter = 1000
         maxName = ''
         if updateTotals:
@@ -351,8 +317,6 @@ class SpeciesStateTable:
 
         else:
             raise ValueError('No convergence in LTE update')
-
-        self.HminPops[:] = hminus_pops(atmos, self.atomicPops['H'])
 
         
 
@@ -582,153 +546,3 @@ class RadiativeSet:
                         lowerLevels[t.atom.name][-1].add(t.i)
 
         return SpectrumConfiguration(radSet=self, wavelength=grid, transitions=transitions, models=models, blueIdx=blueIdx, activeSet=activeSet)
-
-
-def hminus_pops(atmos: Atmosphere, hPops: AtomicState) -> np.ndarray:
-    CI = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
-    Nspace = atmos.depthScale.shape[0]
-    HminPops = np.zeros(Nspace)
-
-    for k in range(Nspace):
-        PhiHmin = 0.25 * (CI / atmos.temperature[k])**1.5 \
-                    * np.exp(Const.E_ION_HMIN / (Const.KBoltzmann * atmos.temperature[k]))
-        HminPops[k] = atmos.ne[k] * np.sum(hPops.n[:, k]) * PhiHmin
-
-    return HminPops
-
-    
-
-def chemical_equilibrium_fixed_ne(atmos: Atmosphere, molecules: MolecularTable, atomicPops: AtomicStateTable, table: AtomicTable) -> SpeciesStateTable:
-    nucleiSet: Set[Element] = set()
-    for mol in molecules:
-        nucleiSet |= set(mol.elements)
-    nuclei: List[Union[Element, AtomicState]]= list(nucleiSet)
-    nuclei = sorted(nuclei, key=atomic_weight_sort)
-
-    if len(nuclei) == 0:
-        HminPops = hminus_pops(atmos, atomicPops['H'])
-        result = SpeciesStateTable(atmos, table, atomicPops, molecules, [], HminPops)
-        return result
-
-    if not nuclei[0].name.startswith('H'):
-        raise ValueError('H not list of nuclei -- check H2 molecule')
-    print([n.name for n in nuclei])
-
-    nuclIndex = [[nuclei.index(ele) for ele in mol.elements] for mol in molecules]
-
-    # Replace basic elements with full Models if present
-    for i, nuc in enumerate(nuclei):
-        if nuc.name in atomicPops:
-            nuclei[i] = atomicPops[nuc.name]
-    Nnuclei = len(nuclei)
-
-    Neqn = Nnuclei + len(molecules)
-    f = np.zeros(Neqn)
-    n = np.zeros(Neqn)
-    df = np.zeros((Neqn, Neqn))
-    a = np.zeros(Neqn)
-
-    # Equilibrium constant per molecule
-    Phi = np.zeros(len(molecules))
-    # Neutral fraction
-    fn0 = np.zeros(Nnuclei)
-
-    CI = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
-    Nspace = atmos.depthScale.shape[0]
-    HminPops = np.zeros(Nspace)
-    molPops = [np.zeros(Nspace) for mol in molecules]
-    maxIter = 0
-    for k in range(Nspace):
-        for i in range(Nnuclei):
-            a[i] = nuclei[i].abundance * atmos.nHTot[k]
-            fjk, dfjk = nuclei[i].fjk(atmos, k)
-            fn0[i] = fjk[0]
-
-        PhiHmin = 0.25 * (CI / atmos.temperature[k])**1.5 \
-                    * np.exp(Const.E_ION_HMIN / (Const.KBoltzmann * atmos.temperature[k]))
-        fHmin = atmos.ne[k] * fn0[0] * PhiHmin
-
-
-        # Eq constant for each molecule at this location
-        for i, mol in enumerate(molecules):
-            Phi[i] = mol.equilibrium_constant(atmos.temperature[k])
-
-        # Setup initial solution. Everything dissociated
-        # n[:Nnuclei] = a[:Nnuclei]
-        # n[Nnuclei:] = 0.0
-        n[:] = a[:]
-        # print('a', a)
-
-        nIter = 1
-        NmaxIter = 50
-        IterLimit = 1e-3
-        prevN = n.copy()
-        while nIter < NmaxIter:
-            # print(k, ',', nIter)
-            # Save previous solution
-            prevN[:] = n[:]
-
-            # Set up iteration
-            f[:] = n - a
-            df[:, :] = 0.0
-            np.fill_diagonal(df, 1.0)
-
-            # Add nHmin to number conservation for H
-            f[0] += fHmin * n[0]
-            df[0, 0] += fHmin
-
-            # Fill population vector f and derivative matrix df
-            for i, mol in enumerate(molecules):
-                saha = Phi[i]
-                for j, ele in enumerate(mol.elements):
-                    nu = nuclIndex[i][j]
-                    saha *= (fn0[nu] * n[nu])**mol.elementCount[j]
-                    # Contribution to conservation for each nucleus in this molecule
-                    f[nu] += mol.elementCount[j] * n[Nnuclei + i]
-
-                saha /= atmos.ne[k]**mol.charge
-                f[Nnuclei + i] -= saha
-                # if Nnuclei + i == f.shape[0]-1:
-                #     print(i)
-                #     print(saha)
-
-                # Compute derivative matrix
-                for j, ele in enumerate(mol.elements):
-                    nu = nuclIndex[i][j]
-                    df[nu, Nnuclei + i] += mol.elementCount[j]
-                    df[Nnuclei + i, nu] = -saha * (mol.elementCount[j] / n[nu])
-
-            correction = solve(df, f)
-            n -= correction
-
-            # correction = dgesvx(df, f.reshape(f.shape[0], 1))[7]
-            # n -= correction.squeeze()
-            # correction = newton_krylov(lambda x: df@x - f, np.zeros_like(f))
-            # n -= correction
-            # print(correction)
-
-            # dnMax = np.nanmax(np.abs((n - prevN) / n))
-            dnMax = np.nanmax(np.abs(1.0 - prevN / n))
-            # print(dnMax)
-            if dnMax <= IterLimit:
-                maxIter = max(maxIter, nIter)
-                break
-
-            nIter += 1
-        if dnMax > IterLimit:
-            raise ValueError("ChemEq iteration not converged: T: %e [K], density %e [m^-3], dnmax %e" % (atmos.temperature[k], atmos.nHTot[k], dnMax))
-
-        for i, ele in enumerate(nuclei):
-            if ele.name in atomicPops:
-                atomPop = atomicPops[ele.name].n
-                fraction = n[i] / np.sum(atomPop[:, k])
-                atomPop[:, k] *= fraction
-
-        HminPops[k] = atmos.ne[k] * n[0] * PhiHmin
-
-        for i, pop in enumerate(molPops):
-            pop[k] = n[Nnuclei + i] 
-
-    result = SpeciesStateTable(atmos, table, atomicPops, molecules, molPops, HminPops)
-    print("Maximum number of iterations taken: %d" % maxIter)
-    return result
