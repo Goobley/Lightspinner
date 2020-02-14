@@ -1,10 +1,10 @@
-import lightweaver.constants as C
+import constants as C
 from copy import copy, deepcopy
 import numpy as np
 import re
 from typing import Tuple
 from dataclasses import dataclass
-from .atmosphere import Atmosphere, ScaleType
+from atmosphere import Atmosphere, ScaleType
 
 @dataclass
 class MultiMetadata:

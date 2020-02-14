@@ -1,5 +1,5 @@
-from .atomic_model import CollisionalRates, AtomicModel
-import lightweaver.constants as Const
+from atomic_model import CollisionalRates, AtomicModel
+import constants as Const
 from dataclasses import dataclass
 import numpy as np
 from typing import Sequence

@@ -7,7 +7,7 @@ from math import *
 import os
 import xdrlib
 from numba import njit
-from .utils import get_data_path
+from utils import get_data_path
 
 
 class dum: # Just a container for the PF

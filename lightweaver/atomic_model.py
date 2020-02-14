@@ -8,10 +8,10 @@ import numpy as np
 from scipy.interpolate import interp1d
 from parse import parse
 
-import lightweaver.constants as Const
-from .utils import gaunt_bf
-from .atomic_table import AtomicTable, get_global_atomic_table
-from .barklem import Barklem
+import constants as Const
+from utils import gaunt_bf
+from atomic_table import AtomicTable, get_global_atomic_table
+from barklem import Barklem
 
 class VdwBarklemIncompatible(Exception):
     pass
@@ -306,6 +306,33 @@ class AtomicLine(AtomicTransition):
     @property
     def Nlambda(self):
         return self.wavelength.shape[0]
+
+    @property
+    def lambda0(self) -> float:
+        raise NotImplemented
+
+    @property
+    def lambda0_m(self) -> float:
+        raise NotImplemented
+
+    @property
+    def Aji(self) -> float:
+        raise NotImplemented
+
+    @property
+    def Bji(self) -> float:
+        raise NotImplemented
+
+    @property
+    def Bij(self) -> float:
+        raise NotImplemented
+
+    @property
+    def polarisable(self) -> bool:
+        raise NotImplemented
+
+    def damping(self, atmos, vBroad, hGround):
+        raise NotImplemented
 
 def fraction_range(start: Fraction, stop: Fraction, step: Fraction=Fraction(1,1)) -> Iterator[Fraction]:
     while start < stop:

@@ -3,13 +3,13 @@ from dataclasses import dataclass, field
 from parse import parse
 import numpy as np
 if TYPE_CHECKING:
-    from .atomic_model import AtomicLevel, AtomicLine, AtomicModel, determinate, CompositeLevelError
+    from atomic_model import AtomicLevel, AtomicLine, AtomicModel
 import string
-from .atomic_table import AtomicTable
-from .utils import get_data_path
+from atomic_table import AtomicTable
+from utils import get_data_path
 from scipy.interpolate import RectBivariateSpline
 from scipy.special import gamma
-import lightweaver.constants as Const
+import constants as Const
 import os
 
 DeltaNeff = 0.1

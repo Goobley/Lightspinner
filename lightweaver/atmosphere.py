@@ -2,12 +2,12 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Sequence, TYPE_CHECKING, Optional, Union
 import numpy as np
-from .witt import witt
-import lightweaver.constants as Const
+from witt import witt
+import constants as Const
 from scipy.interpolate import interp1d
 from numpy.polynomial.legendre import leggauss
-from .utils import ConvergenceError
-from .atomic_table import get_global_atomic_table
+from utils import ConvergenceError
+from atomic_table import get_global_atomic_table
 
 class ScaleType(Enum):
     Geometric = 0
@@ -38,7 +38,7 @@ class Atmosphere:
         if self.hydrogenPops is not None:
             self.nHTot = np.sum(self.hydrogenPops, axis=0)
 
-    def convert_scales(self, atomicTable=None, logG=2.44, Pgas=None, Pe=None, Ptop=None, PeTop=None):
+    def convert_scales(self, atomicTable=None, logG=2.44):
         if atomicTable is None:
             atomicTable = get_global_atomic_table()
 
@@ -165,7 +165,9 @@ class Atmosphere:
 
         return self.muz.shape[0]
 
-
+    def validate(self):
+        if self.ne is None or self.nHTot is None:
+            raise AttributeError
 
 
 

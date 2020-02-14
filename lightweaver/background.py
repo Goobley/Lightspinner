@@ -1,11 +1,11 @@
 import numpy as np
 from dataclasses import dataclass
-from .atmosphere import Atmosphere
-from .atomic_set import SpectrumConfiguration
+from atmosphere import Atmosphere
+from atomic_set import SpectrumConfiguration
 import witt
 import constants as Const
-from .atomic_table import get_global_atomic_table
-from .utils import planck
+from atomic_table import get_global_atomic_table
+from utils import planck
 
 def thomson_scattering(atmos):
     sigma = 8.0 * np.pi / 3.0 * (Const.QElectron / (np.sqrt(4.0 * np.pi * Const.Epsilon0) * (np.sqrt(Const.MElectron) * Const.CLight)))**4

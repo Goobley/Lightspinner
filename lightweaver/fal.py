@@ -1,7 +1,7 @@
 import numpy as np
-from .atmosphere import Atmosphere, ScaleType
+from atmosphere import Atmosphere, ScaleType
 from typing import Callable
-import lightweaver.constants as Const
+import constants as Const
 
 cmass = 10**(np.array([
   -4.93574095E+00,

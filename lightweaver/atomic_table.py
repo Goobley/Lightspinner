@@ -4,14 +4,14 @@ from collections import OrderedDict
 from xdrlib import Unpacker
 from dataclasses import dataclass, field
 import numpy as np
-import lightweaver.constants as Const
+import constants as Const
 from scipy.interpolate import interp1d
 from numba import jit
-from .utils import ConvergenceError, get_data_path
+from utils import ConvergenceError, get_data_path
 
 if TYPE_CHECKING:
-    from .atomic_model import AtomicModel
-    from .atmosphere import Atmosphere
+    from atomic_model import AtomicModel
+    from atmosphere import Atmosphere
 
 AtomicWeights = OrderedDict([
     ("H ", 1.008),   ("HE", 4.003),   ("LI", 6.939),   ("BE", 9.013),

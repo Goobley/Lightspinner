@@ -1,14 +1,12 @@
 from dataclasses import dataclass, field
-from .atomic_table import atomic_weight_sort, Element, AtomicTable, get_global_atomic_table
-from .atomic_model import AtomicLine, AtomicModel, AtomicContinuum
-from .atmosphere import Atmosphere
-from .molecule import Molecule, MolecularTable
-import lightweaver.constants as Const
+from atomic_table import atomic_weight_sort, Element, AtomicTable, get_global_atomic_table
+from atomic_model import AtomicLine, AtomicModel, AtomicContinuum
+from atmosphere import Atmosphere
+import constants as Const
 from typing import List, Sequence, Set, Optional, Any, Union, Dict
 from copy import copy, deepcopy
 from collections import OrderedDict
 import numpy as np
-from scipy.linalg import solve
 
 @dataclass
 class SpectrumConfiguration:
@@ -147,7 +145,9 @@ def lte_pops(atomicModel, atmos, nTotal, debye=True):
     return nStar
 
 class AtomicStateTable:
-    def __init__(self, atoms: List['AtomicState']):
+    def __init__(self, atmos: Atmosphere, atomicTable: AtomicTable, atoms: List['AtomicState']):
+        self.atmos = atmos
+        self.atomicTable = atomicTable
         self.atoms = atoms
         self.indices = OrderedDict(zip([a.model.name.upper().ljust(2) for a in atoms], list(range(len(atoms)))))
 
@@ -181,20 +181,11 @@ class AtomicStateTableIterator:
 
         raise StopIteration
 
-
-
 @dataclass
 class AtomicState:
     model: AtomicModel
     nStar: np.ndarray
     nTotal: np.ndarray
-    pops: Optional[np.ndarray] = None
-    Rij: Optional[List[np.ndarray]] = None
-    Rji: Optional[List[np.ndarray]] = None
-    lineRij: Optional[List[np.ndarray]] = None
-    lineRji: Optional[List[np.ndarray]] = None
-    continuumRij: Optional[List[np.ndarray]] = None
-    continuumRji: Optional[List[np.ndarray]] = None
 
     def __repr__(self):
         return 'AtomicModelPops(name=%s(%d), nStar=%s, nTotal=%s, pops=%s)' % (self.model.name, hash(self.model), repr(self.nStar), repr(self.nTotal), repr(self.pops))
@@ -216,110 +207,6 @@ class AtomicState:
     @property
     def weight(self):
         return self.model.atomicTable[self.model.name].weight
-
-    @property
-    def n(self) -> np.ndarray:
-        if self.pops is not None:
-            return self.pops
-        else:
-            return self.nStar
-
-    @n.setter
-    def n(self, val: np.ndarray):
-        if val.shape != self.nStar.shape:
-            raise ValueError('Incorrect dimensions for population array, expected %s' % repr(self.nStar.shape))
-
-        self.pops = val
-
-    def fjk(self, atmos, k):
-        Nstage: int = self.model.levels[-1].stage + 1
-
-        fjk = np.zeros(Nstage)
-        # TODO(cmo): Proper derivative treatment
-        dfjk = np.zeros(Nstage)
-
-        for i, l in enumerate(self.model.levels):
-            fjk[l.stage] += self.n[i, k]
-
-        fjk /= self.nTotal[k]
-
-        return fjk, dfjk
-
-    def fj(self, atmos):
-        Nstage: int = self.model.levels[-1].stage + 1
-        Nspace: int = atmos.depthScale.shape[0]
-
-        fj = np.zeros((Nstage, Nspace))
-        # TODO(cmo): Proper derivative treatment
-        dfj = np.zeros((Nstage, Nspace))
-
-        for i, l in enumerate(self.model.levels):
-            fj[l.stage] += self.n[i]
-
-        fjk /= self.nTotal
-
-        return fj, dfj
-
-
-@dataclass
-class SpeciesStateTable:
-    atmosphere: Atmosphere
-    atomicTable: AtomicTable
-    atomicPops: AtomicStateTable
-
-    def __getitem__(self, name: str) -> np.ndarray:
-        if name in self.atomicPops:
-            return self.atomicPops[name].n
-        else:
-            raise KeyError('Unknown key: %s' % name)
-
-    def __contains__(self, name: Union[str, AtomicModel]) -> bool:
-        if isinstance(name, AtomicModel):
-            name = name.name
-
-        if name in self.atomicPops:
-            return True
-
-        return False
-
-    def atomic_population(self, name: str) -> np.ndarray:
-        return self.atomicPops[name].n
-
-    def update_lte_pops(self, atmos: Atmosphere, conserveCharge=False, updateTotals=False):
-        maxIter = 1000
-        maxName = ''
-        if updateTotals:
-            for atom in self.atomicPops:
-                atom.update_nTotal(atmos)
-        for i in range(maxIter):
-            maxDiff = 0.0
-            ne = np.copy(atmos.ne)
-            for atom in self.atomicPops:
-                prevNStar = np.copy(atom.nStar)
-                newNStar = lte_pops(atom.model, atmos, atom.nTotal, debye=True)
-                deltaNStar = newNStar - prevNStar
-                atom.nStar[:] = newNStar
-
-                if atom.pops is None and conserveCharge:
-                    stages = np.array([l.stage for l in atom.model.levels])
-                    ne += np.sum((atom.nStar - prevNStar) * stages[:, None], axis=0)
-
-                    ne[ne < 1e6] = 1e6
-                diff = np.nanmax(1.0 - prevNStar / atom.nStar)
-                if diff > maxDiff:
-                    maxDiff = diff
-                    maxName = atom.name
-            atmos.ne[:] = ne
-            # print(maxDiff, maxName)
-            if maxDiff < 1e-3:
-                print('LTE Iterations %d' % (i+1))
-                break
-
-        else:
-            raise ValueError('No convergence in LTE update')
-
-        
-
 
 @dataclass
 class RadiativeSet:
@@ -418,7 +305,10 @@ class RadiativeSet:
                 continue
             a.replace_atomic_table(self.atomicTable)
 
-    def iterate_lte_ne_eq_pops(self, mols: MolecularTable, atmos: Atmosphere):
+    def iterate_lte_ne_eq_pops(self, atmos: Atmosphere):
+        if atmos.nHTot is None or atmos.ne is None:
+            raise AttributeError
+
         maxIter = 500
         prevNe = np.copy(atmos.ne)
         ne = np.copy(atmos.ne)
@@ -427,7 +317,7 @@ class RadiativeSet:
             prevNe[:] = ne
             ne.fill(0.0)
             for a in sorted(self.atoms, key=atomic_weight_sort):
-                nTotal = a.atomicTable[a.name].abundance * atmos.nHTot
+                nTotal = self.atomicTable[a.name].abundance * atmos.nHTot
                 nStar = lte_pops(a, atmos, nTotal, debye=True)
                 atomicPops.append(AtomicState(a, nStar, nTotal))
                 stages = np.array([l.stage for l in a.levels])
@@ -445,20 +335,19 @@ class RadiativeSet:
         else:
             print("LTE ne failed to converge")
 
-        table = AtomicStateTable(atomicPops)
-        eqPops = chemical_equilibrium_fixed_ne(atmos, mols, table, self.atoms[0].atomicTable)
-        return eqPops
+        table = AtomicStateTable(atmos, self.atomicTable, atomicPops)
+        return table
 
-    def compute_eq_pops(self, mols: MolecularTable, atmos: Atmosphere):
+    def compute_eq_pops(self, atmos: Atmosphere):
+        atmos.validate()
         atomicPops = []
         for a in sorted(self.atoms, key=atomic_weight_sort):
-            nTotal = a.atomicTable[a.name].abundance * atmos.nHTot
+            nTotal = self.atomicTable[a.name].abundance * atmos.nHTot
             nStar = lte_pops(a, atmos, nTotal, debye=True)
             atomicPops.append(AtomicState(a, nStar, nTotal))
 
-        table = AtomicStateTable(atomicPops)
-        eqPops = chemical_equilibrium_fixed_ne(atmos, mols, table, self.atoms[0].atomicTable)
-        return eqPops
+        table = AtomicStateTable(atmos, self.atomicTable, atomicPops)
+        return table
 
     def compute_wavelength_grid(self, extraWavelengths: Optional[np.ndarray]=None, lambdaReference=500.0) -> SpectrumConfiguration:
         if len(self.activeSet) == 0 and len(self.detailedLteSet) == 0:
@@ -489,16 +378,9 @@ class RadiativeSet:
                 grids.append(np.array([cont.lambdaEdge]))
                 grids.append(cont.wavelength[cont.wavelength <= cont.lambdaEdge])
 
-        # for atom in self.detailedLteSet:
-        #     for line in atom.lines:
-        #         grids.append(line.wavelength)
-        #     for cont in atom.continua:
-        #         grids.append(cont.wavelength)
-
         grid = np.concatenate(grids)
         grid = np.sort(grid)
         grid = np.unique(grid)
-        # grid = np.unique(np.floor(1e10*grid)) / 1e10
         blueIdx = []
         redIdx = []
 

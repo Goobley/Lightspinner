@@ -1,4 +1,4 @@
-import lightweaver.constants as C
+import constants as C
 from copy import copy, deepcopy
 import numpy as np
 import os
@@ -8,22 +8,16 @@ from enum import Enum, auto
 from astropy import units
 from specutils.utils.wcs_utils import vac_to_air as spec_vac_to_air, air_to_vac as spec_air_to_vac
 from numba import njit
+from scipy import special
 
-@dataclass
-class NgOptions:
-    Norder: int = 0
-    Nperiod: int = 0
-    Ndelay: int = 0
-
-class InitialSolution(Enum):
-    Lte = auto()
-    Zero = auto()
-    EscapeProbability = auto()
+def voigt_H(a, v):
+    z = (v + 1j * a)
+    return special.wofz(z).real
 
 @njit
 def planck(temp, wav):
-    hc_Tkla = Const.HC / (Const.KBOLTZMANN * Const.NM_TO_M * wav) / temp
-    twohnu3_c2 = (2.0 * Const.HC) / (Const.NM_TO_M * wav)**3
+    hc_Tkla = C.HC / (C.KBoltzmann * C.NM_TO_M * wav) / temp
+    twohnu3_c2 = (2.0 * C.HC) / (C.NM_TO_M * wav)**3
 
     return twohnu3_c2 / (np.exp(hc_Tkla) - 1.0)
 
@@ -49,12 +43,6 @@ def get_data_path():
     if _LwCodeLocation is None:
         _LwCodeLocation, _ = os.path.split(__file__)
     return _LwCodeLocation + '/../Data/'
-
-def get_default_molecule_path():
-    global _LwCodeLocation
-    if _LwCodeLocation is None:
-        _LwCodeLocation, _ = os.path.split(__file__)
-    return _LwCodeLocation + '/../Molecules/'
 
 def vac_to_air(wavelength: np.ndarray) -> np.ndarray:
     return spec_vac_to_air(wavelength * units.nm, method='edlen1966').value
