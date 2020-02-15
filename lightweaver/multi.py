@@ -4,14 +4,15 @@ import numpy as np
 import re
 from typing import Tuple
 from dataclasses import dataclass
-from atmosphere import Atmosphere, ScaleType
+from atmosphere import AtmosphereConstructor, ScaleType
+import astropy.units as u
 
 @dataclass
 class MultiMetadata:
     name: str
     logG: float
 
-def read_multi_atmos(filename: str) -> Tuple[MultiMetadata, Atmosphere]:
+def read_multi_atmos(filename: str) -> Tuple[MultiMetadata, AtmosphereConstructor]:
     try:
         with open(filename, 'r') as f:
             lines = f.readlines()
@@ -48,19 +49,17 @@ def read_multi_atmos(filename: str) -> Tuple[MultiMetadata, Atmosphere]:
     scaleMode = scaleStr[0].upper()
     if scaleMode == 'M':
         scaleType = ScaleType.ColumnMass
-        dscale = 10**dscale * (C.G_TO_KG / C.CM_TO_M**2)
+        dscale = 10**dscale
+        dscaleunits = u.g / u.cm**2
     elif scaleMode == 'T':
         scaleType = ScaleType.Tau500
         dscale = 10**dscale
+        dscaleUnits = u.one
     elif scaleMode == 'H':
         scaleType = ScaleType.Geometric
-        dscale *= C.KM_TO_M
+        dscaleUnits = u.km
     else:
         raise ValueError('Unknown scale type: %s (expected M, T, or H)' % scaleStr)
-
-    vlos *= C.KM_TO_M
-    vturb *= C.KM_TO_M
-    ne /= C.CM_TO_M**3
 
     if len(lines) <= Nspace:
         raise ValueError('Hydrogen populations not supplied!')
@@ -71,16 +70,13 @@ def read_multi_atmos(filename: str) -> Tuple[MultiMetadata, Atmosphere]:
         vals = [float(v) for v in vals]
         hPops[:, k] = vals
 
-    hPops /= C.CM_TO_M**3
-
     meta = MultiMetadata(atmosName, logG)
-    atmos = Atmosphere(scale=scaleType,
-                       depthScale=dscale,
-                       temperature=temp,
-                       vlos=vlos,
-                       vturb=vturb,
-                       ne=ne,
-                       hydrogenPops=hPops)
+    atmos = AtmosphereConstructor(depthScale=dscale << dscaleUnits,
+                                  temperature=temp << u.K,
+                                  vlos=vlos << u.cm / u.s,
+                                  vturb=vturb << u.cm / u.s,
+                                  ne=ne << u.cm**(-3),
+                                  hydrogenPops=hPops << u.cm**(-3))
 
     return (meta, atmos)
 

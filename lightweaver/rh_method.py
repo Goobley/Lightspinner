@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 import numpy as np
-from numpy.linalg import solve
-from typing import Union, Optional
+from scipy.linalg import solve
+from typing import Union, Optional, List
 from atomic_model import AtomicLine, AtomicContinuum, AtomicModel, VoigtLine
 from atmosphere import Atmosphere
 from atomic_set import SpectrumConfiguration, AtomicStateTable
@@ -20,7 +20,7 @@ class UV:
     Vji: np.ndarray
 
 class ComputationalTransition:
-    def __init__(self, trans: Union[AtomicLine, AtomicContinuum], compAtom: 'ComputationalAtom', atmos: Atmosphere, spect: SpectrumConfiguration, gij: float):
+    def __init__(self, trans: Union[AtomicLine, AtomicContinuum], compAtom: 'ComputationalAtom', atmos: Atmosphere, spect: SpectrumConfiguration):
         self.transModel = trans
         self.atom = compAtom
         self.wavelength = trans.wavelength
@@ -43,7 +43,7 @@ class ComputationalTransition:
             if trans in s:
                 self.active[i] = True
 
-        self.gij = gij
+        self.gij = None
         self.Rij = np.zeros(atmos.Nspace)
         self.Rji = np.zeros(atmos.Nspace)
 
@@ -130,16 +130,14 @@ class ComputationalAtom:
         self.hPops = eqPops['H']
         self.nTotal = self.pops.nTotal
 
-        self.trans = []
-        # TODO(cmo): Fix gij
-        gij = 1.0
+        self.trans: List[ComputationalTransition] = []
         for l in atom.lines:
             if l in spect.transitions:
-                self.trans.append(ComputationalTransition(l, self, atmos, spect, gij))
+                self.trans.append(ComputationalTransition(l, self, atmos, spect))
 
         for c in atom.continua:
             if c in spect.transitions:
-                self.trans.append(ComputationalTransition(c, self, atmos, spect, gij))
+                self.trans.append(ComputationalTransition(c, self, atmos, spect))
 
         Nlevel = len(atom.levels)
         self.Gamma = np.zeros((Nlevel, Nlevel, atmos.Nspace))
@@ -149,15 +147,15 @@ class ComputationalAtom:
 
         self.Nlevel = Nlevel
         self.Ntrans = len(self.trans)
-        self.Nspace = atmos.Nspace
 
     def setup_wavelength(self, laIdx: int):
-        self.eta = np.zeros(self.Nspace)
-        self.gij = np.zeros((self.Ntrans, self.Nspace))
-        self.wla = np.zeros((self.Ntrans, self.Nspace))
-        self.V = np.zeros((self.Nlevel, self.Nspace))
-        self.U = np.zeros((self.Nlevel, self.Nspace))
-        self.chi = np.zeros((self.Nlevel, self.Nspace))
+        Nspace = self.atmos.Nspace
+        self.eta = np.zeros(Nspace)
+        self.gij = np.zeros((self.Ntrans, Nspace))
+        self.wla = np.zeros((self.Ntrans, Nspace))
+        self.V = np.zeros((self.Nlevel, Nspace))
+        self.U = np.zeros((self.Nlevel, Nspace))
+        self.chi = np.zeros((self.Nlevel, Nspace))
 
         hc_k = Const.HC / (Const.KBoltzmann * Const.NM_TO_M)
         h_4pi = 0.25 * Const.HPlanck / np.pi
@@ -166,7 +164,7 @@ class ComputationalAtom:
             if not t.active[laIdx]:
                 continue
 
-            if isinstance(t, AtomicLine):
+            if isinstance(t.transModel, AtomicLine):
                 self.gij[kr, :] = t.Bji / t.Bij
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / hc_4pi
             else:
@@ -181,16 +179,34 @@ class ComputationalAtom:
         self.U.fill(0.0)
         self.chi.fill(0.0)
 
+    def setup_Gamma(self):
+        self.Gamma.fill(0.0)
+
     def compute_collisions(self):
         self.C = np.zeros_like(self.Gamma)
         for col in self.atomicModel.collisions:
-            col.compute_rates(self.atmos, self.nstar, self.C)
+            col.compute_rates(self.atmos, self.nStar, self.C)
         self.C[self.C < 0.0] = 0.0
 
 @dataclass
 class IPsi:
     I: np.ndarray
     PsiStar: np.ndarray
+
+@njit
+def w2(dtau):
+    w = np.empty(2)
+    if dtau < 5e-4:
+        w[0] = dtau * (1.0 - 0.5*dtau)
+        w[1] = dtau**2 * (0.5 - dtau / 3.0)
+    elif dtau > 50.0:
+        w[0] = 1.0
+        w[1] = 1.0
+    else:
+        expdt = np.exp(-dtau)
+        w[0] = 1.0 - expdt
+        w[1] = w[0] - dtau * expdt
+    return w
 
 @njit
 def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
@@ -210,8 +226,8 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
     dS_uw = (S[kStart] - S[kStart + dk]) / dtau_uw
 
     Iupw = Istart
-    I = np.empty(Nspace)
-    Psi = np.empty(Nspace)
+    I = np.zeros(Nspace)
+    Psi = np.zeros(Nspace)
     I[kStart] = Iupw
     Psi[kStart] = 0.0
 
@@ -221,7 +237,6 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
         if k != kEnd:
             dtau_dw = zmu * (chi[k] + chi[k+dk]) * np.abs(z[k] - z[k+dk])
             dS_dw = (S[k] - S[k+dk]) / dtau_dw
-            # print(dS_uw, dtau_uw, Iupw, w)
             I[k] = (1.0 - w[0]) * Iupw + w[0] * S[k] + w[1] * dS_uw
             Psi[k] = w[0] - w[1] / dtau_uw
         else:
@@ -247,9 +262,8 @@ def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
         kStart = 0
         kEnd = atmos.Nspace - 1
 
-    dtau_uw = zmu * (chi[kStart] + chi[kStart + dk]) * np.abs(z[kStart] - z[kStart + dk])
-
     if toFrom:
+        dtau_uw = zmu * (chi[kStart] + chi[kStart + dk]) * np.abs(z[kStart] - z[kStart + dk])
         Bnu = planck(atmos.temperature[-2:], wav)
         Iupw = Bnu[1] - (Bnu[0] - Bnu[1]) / dtau_uw
     else:
@@ -258,15 +272,15 @@ def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
     I, Psi = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
     return IPsi(I, Psi)
 
-
 class Context:
     def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable, background: Background):
         self.atmos = atmos
+        self.atmos.nondimensionalise()
         self.spect = spect
         self.background = background
         self.eqPops = eqPops
 
-        self.activeAtoms = []
+        self.activeAtoms: List[ComputationalAtom] = []
         for a in spect.radSet.activeAtoms:
             self.activeAtoms.append(ComputationalAtom(a, atmos, spect, eqPops))
 
@@ -277,6 +291,7 @@ class Context:
         Nspace = self.atmos.Nspace
         Nrays = self.atmos.Nrays
         Nspect = self.spect.wavelength.shape[0]
+        background = self.background
 
         activeAtoms = self.activeAtoms
 
@@ -317,11 +332,18 @@ class Context:
                             atom.eta += eta
 
                     chiTot += background.chi[la]
-                    S = (etaTot + background.eta[la] + background.sca[la] * JDag) / chiTot
+                    S = (etaTot + background.eta[la] + background.sca[la] * JDag[la]) / chiTot
 
-                    iPsi = piecewise_linear_1d(atmos, mu, toFrom, chi, S)
+                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
                     self.I[la, mu] = iPsi.I[0]
                     self.J[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+
+                    if np.any(iPsi.PsiStar * chiTot < 0) or np.any(iPsi.PsiStar * chiTot > 1.0):
+                        print(la, wav, mu, toFrom)
+                        print(iPsi.PsiStar, chiTot)
+                        print(iPsi.I, S)
+                        raise ValueError('Formal solver exploded!!')
+
 
                     for atom in self.activeAtoms:
                         Ieff = iPsi.I - iPsi.PsiStar * atom.eta
@@ -341,8 +363,15 @@ class Context:
                             integrand = (uv.Vij * Ieff) - (iPsi.PsiStar * atom.chi[t.j] * atom.U[t.i])
                             atom.Gamma[t.j, t.i] += integrand * wlamu
 
-                            t.Rij += I * uv.Vij * wlamu
-                            t.Rji += (uv.Uji + I * uv.Vij) * wlamu
+                            t.Rij += iPsi.I * uv.Vij * wlamu
+                            t.Rji += (uv.Uji + iPsi.I * uv.Vij) * wlamu
+
+        for atom in activeAtoms:
+            for k in range(Nspace):
+                np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
+                for i in range(atom.Nlevel):
+                    GamDiag = np.sum(atom.Gamma[:, i, k])
+                    atom.Gamma[i, i, k] = -GamDiag
 
         dJ = np.abs(1.0 - JDag / self.J)
         dJMax = dJ.max()

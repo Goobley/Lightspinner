@@ -14,6 +14,14 @@ def thomson_scattering(atmos):
 
 class Background:
     def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration):
+        self.atmos = atmos
+        self.spect = spect
+        self.compute_background_eos()
+
+    def compute_background_eos(self):
+        atmos = self.atmos
+        atmos.nondimensionalise()
+        spect = self.spect
         Nspace = atmos.Nspace
         Nspect = spect.wavelength.shape[0]
 
@@ -30,6 +38,8 @@ class Background:
         eta = np.zeros((Nspect, Nspace))
         for k in range(Nspace):
             chi[:, k] = eos.contOpacity(atmos.temperature[k], pgas[k], pe[k], spect.wavelength*10) / Const.CM_TO_M
+
+        for k in range(Nspace):
             eta[:, k] = planck(atmos.temperature[k], spect.wavelength) * chi[:, k]
 
         sca = np.zeros((Nspect, Nspace))
@@ -39,3 +49,5 @@ class Background:
         self.chi = chi
         self.eta = eta
         self.sca = sca
+
+        atmos.dimensionalise()

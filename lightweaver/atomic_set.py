@@ -103,6 +103,7 @@ class SpectrumConfiguration:
 
 
 def lte_pops(atomicModel, atmos, nTotal, debye=True):
+    atmos.nondimensionalise()
     Nlevel = len(atomicModel.levels)
     c1 = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
 
@@ -142,6 +143,7 @@ def lte_pops(atomicModel, atmos, nTotal, debye=True):
     for i in range(1, Nlevel):
         nStar[i] *= nStar[0]
 
+    atmos.dimensionalise()
     return nStar
 
 class AtomicStateTable:
@@ -194,7 +196,7 @@ class AtomicState:
         return hash(repr(self))
 
     def update_nTotal(self, atmos):
-        self.nTotal[:] = self.model.atomicTable[self.name].abundance * atmos.nHTot
+        self.nTotal[:] = self.model.atomicTable[self.name].abundance * atmos.nHTot.value
 
     @property
     def name(self):
@@ -306,9 +308,7 @@ class RadiativeSet:
             a.replace_atomic_table(self.atomicTable)
 
     def iterate_lte_ne_eq_pops(self, atmos: Atmosphere):
-        if atmos.nHTot is None or atmos.ne is None:
-            raise AttributeError
-
+        atmos.nondimensionalise()
         maxIter = 500
         prevNe = np.copy(atmos.ne)
         ne = np.copy(atmos.ne)
@@ -335,14 +335,14 @@ class RadiativeSet:
         else:
             print("LTE ne failed to converge")
 
+        atmos.dimensionalise()
         table = AtomicStateTable(atmos, self.atomicTable, atomicPops)
         return table
 
     def compute_eq_pops(self, atmos: Atmosphere):
-        atmos.validate()
         atomicPops = []
         for a in sorted(self.atoms, key=atomic_weight_sort):
-            nTotal = self.atomicTable[a.name].abundance * atmos.nHTot
+            nTotal = self.atomicTable[a.name].abundance * atmos.nHTot.value
             nStar = lte_pops(a, atmos, nTotal, debye=True)
             atomicPops.append(AtomicState(a, nStar, nTotal))
 

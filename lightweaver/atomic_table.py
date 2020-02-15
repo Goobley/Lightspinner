@@ -196,7 +196,7 @@ class Element:
 
     def lte_populations(self, atmos: 'Atmosphere') -> np.ndarray:
         Nstage = self.ionpot.shape[0]
-        Nspace = atmos.depthScale.shape[0]
+        Nspace = atmos.Nspace
 
         C1 = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * Const.HPlanck / Const.KBoltzmann
         

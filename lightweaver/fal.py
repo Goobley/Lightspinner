@@ -1,7 +1,8 @@
 import numpy as np
-from atmosphere import Atmosphere, ScaleType
+from atmosphere import AtmosphereConstructor, ScaleType
 from typing import Callable
 import constants as Const
+import astropy.units as u
 
 cmass = 10**(np.array([
   -4.93574095E+00,
@@ -426,4 +427,4 @@ nh = np.array([
  [1.2887E+17, 1.7545E+12, 3.8349E+11, 3.0146E+11, 3.2285E+11, 3.7897E+15],
 ]).T
 
-Falc82: Callable[[], Atmosphere] = lambda: Atmosphere(ScaleType.ColumnMass, depthScale=cmass*Const.G_TO_KG / Const.CM_TO_M**2, temperature=np.copy(temp), ne=ne / Const.CM_TO_M**3, vlos=vel * Const.KM_TO_M, vturb=vturb * Const.KM_TO_M, hydrogenPops=nh / Const.CM_TO_M**3)
+Falc82: Callable[[], AtmosphereConstructor] = lambda: AtmosphereConstructor(depthScale=cmass << u.g / u.cm**2, temperature=np.copy(temp) << u.K, ne=ne << u.cm**(-3), vlos=vel << u.km / u.s, vturb=vturb << u.km / u.s, hydrogenPops=nh << u.cm**(-3))
