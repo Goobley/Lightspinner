@@ -39,7 +39,7 @@ def get_data_path():
     global _LwCodeLocation
     if _LwCodeLocation is None:
         _LwCodeLocation, _ = os.path.split(__file__)
-    return _LwCodeLocation + '/../Data/'
+    return _LwCodeLocation + '/Data/'
 
 def vac_to_air(wavelength: np.ndarray) -> np.ndarray:
     return spec_vac_to_air(wavelength * units.nm, method='edlen1966').value
