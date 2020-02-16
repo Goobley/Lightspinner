@@ -34,9 +34,6 @@ def gaunt_bf(wvl, nEff, charge) -> float:
 class ConvergenceError(Exception):
     pass
 
-class ExplodingMatrixError(Exception):
-    pass
-
 _LwCodeLocation = None
 def get_data_path():
     global _LwCodeLocation
@@ -58,11 +55,3 @@ def convert_specific_intensity(wavelength: np.ndarray, specInt: np.ndarray, outU
         specInt = specInt << units.J / units.s / units.m**2 / units.sr / units.Hz
 
     return specInt.to(outUnits, equivalencies=units.spectral_density(wavelength))
-
-class CrswIterator:
-    def __init__(self, initVal=1e3):
-        self.val = initVal
-
-    def __call__(self):
-        self.val = max(1.0, val * 0.1**(1.0/val))
-        return self.val

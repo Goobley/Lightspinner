@@ -276,6 +276,9 @@ class Atmosphere:
         self.muz = atmos.muz
         self.wmu = atmos.wmu
 
+        self.upperBc = atmos.upperBc
+        self.lowerBc = atmos.lowerBc
+
         self.dimensioned = True
 
     def convert_scales(self, atomicTable=None, logG=2.44):

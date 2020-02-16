@@ -194,7 +194,7 @@ class Element:
     def __repr__(self):
         return 'Element(name=\'%s\', weight=%e, abundance=%e)' % (self.name, self.weight, self.abundance)
 
-    def lte_populations(self, atmos: 'Atmosphere') -> np.ndarray:
+    def lte_population_fractions(self, atmos: 'Atmosphere') -> np.ndarray:
         Nstage = self.ionpot.shape[0]
         Nspace = atmos.Nspace
 
@@ -286,20 +286,6 @@ class Element:
         dfj = (dfj - fj * sumDf) / sumF
         return fj, dfj
 
-
-@dataclass
-class LtePopulations:
-    atomicTable: 'AtomicTable'
-    atmosphere: 'Atmosphere'
-    populations: List[np.ndarray]
-
-    def __getitem__(self, name: str) -> np.ndarray:
-        name = name.upper()
-        if len(name) == 1:
-            name += ' '
-        return self.populations[self.atomicTable.indices[name]]
-    
-
 class AtomicTable:
     def __init__(self, kuruczPfPath: Optional[str]=None, metallicity: float=0.0, 
                         abundances: Dict=None, abundDex: bool=True):
@@ -326,8 +312,6 @@ class AtomicTable:
             if k != 'H ':
                 self.abund[k] = v*metallicity
 
-
-        # TODO(cmo): replace this with a proper default path
         kuruczPfPath = get_data_path() + 'pf_Kurucz.input' if kuruczPfPath is None else kuruczPfPath
         with open(kuruczPfPath, 'rb') as f:
             s = f.read()
@@ -367,104 +351,6 @@ class AtomicTable:
             name += ' '
         return self.elements[self.indices[name]]
 
-    def lte_populations(self, atmos: 'Atmosphere') -> LtePopulations:
-        pops = []
-        for ele in self.elements:
-            pops.append(ele.lte_populations(atmos))
-
-        return LtePopulations(self, atmos, pops)
-
-    def compute_ne_k(self, atmos, k):
-        # Can add a "fromScratch" where we start with ne=nHii
-        neOld = atmos.ne[k]
-
-        C1 = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
-
-        nIter = 1
-        NmaxIter = 100
-        MaxError = 1e-2
-        while nIter < NmaxIter:
-            # Electrons per H
-            error = neOld / atmos.nHTot[k]
-            total = 0.0
-
-            for i, ele in enumerate(self.elements):
-                # Fractional stage pops and derivate wrt ne
-                fjk, dfjk = ele.fjk(atmos, k)
-
-                if ele.name.startswith('H'):
-                # Add H- effects
-                    PhiHmin = 0.25 * (C1 / atmos.temperature[k])**1.5 \
-                                * np.exp(Const.E_ION_HMIN / (Const.KBoltzmann * atmos.temperature[k]))
-                    error += neOld * fjk[0] * PhiHmin
-                    total -= (fjk[0] + neOld * dfjk[0]) * PhiHmin
-
-                for j in range(1, len(ele.ionpot)):
-                    electronContribution = ele.abundance * j
-                    error -= electronContribution * fjk[j]
-                    total += electronContribution * dfjk[j]
-
-            # Quasi-Newton iteration
-            # atmos.nHTot * total is the sum of the derivative of all of the atomic populations wrt ne, weighted by the ionisation stage
-            # Obviously error tends to 0 as this converges -- we're solving f(x) = 0
-            atmos.ne[k] = neOld - atmos.nHTot[k] * error / (1.0 - atmos.nHTot[k] * total)
-            dne = np.abs((atmos.ne[k] - neOld) / neOld)
-            neOld = atmos.ne[k]
-
-            if dne < MaxError:
-                break
-
-            nIter += 1
-
-        if dne > MaxError:
-            raise ConvergenceError("Electron iteration did not converge at point %d" % k)
-        
-
-    def compute_ne(self, atmos):
-        # Can add a "fromScratch" where we start with ne=nHii
-        neOld = atmos.ne.copy()
-
-        C1 = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
-
-        nIter = 1
-        NmaxIter = 100
-        MaxError = 1e-2
-        while nIter < NmaxIter:
-            # Electrons per H
-            error = neOld / atmos.nHTot
-            total = np.zeros_like(error)
-
-            for i, ele in enumerate(self.elements):
-                # Fractional stage pops and derivate wrt ne
-                fj, dfj = ele.fj(atmos)
-
-                if ele.name.startswith('H'):
-                    # Add H- effects
-                    PhiHmin = 0.25 * (C1 / atmos.temperature)**1.5 \
-                                * np.exp(Const.E_ION_HMIN / (Const.KBoltzmann * atmos.temperature))
-                    error += neOld * fj[0] * PhiHmin
-                    total -= (fj[0] + neOld * dfj[0]) * PhiHmin
-
-                for j in range(1, len(ele.ionpot)):
-                    electronContribution = ele.abundance * j
-                    error -= electronContribution * fj[j]
-                    total += electronContribution * dfj[j]
-
-            # Quasi-Newton iteration
-            # atmos.nHTot * total is the sum of the derivative of all of the atomic populations wrt ne, weighted by the ionisation stage
-            # Obviously error tends to 0 as this converges -- we're solving f(x) = 0
-            # Krylov or somtheing?
-            atmos.ne[:] = neOld - atmos.nHTot * error / (1.0 - atmos.nHTot * total)
-            dne = np.max(np.abs((atmos.ne - neOld) / neOld))
-            neOld[:] = atmos.ne
-
-            if dne < MaxError:
-                break
-
-            nIter += 1
-
-        if dne > MaxError:
-            raise ConvergenceError("Electron iteration did not converge")
 
 _StandardAtomicTable: AtomicTable
 def get_global_atomic_table() -> AtomicTable:

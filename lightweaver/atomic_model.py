@@ -11,11 +11,6 @@ from parse import parse
 import constants as Const
 from utils import gaunt_bf
 from atomic_table import AtomicTable, get_global_atomic_table
-from barklem import Barklem
-
-class VdwBarklemIncompatible(Exception):
-    pass
-
 
 @dataclass
 class AtomicModel:
@@ -203,69 +198,6 @@ class VdwUnsold(VdwApprox):
     def broaden(self, temperature, nHGround, broad):
         broad[:] = self.cross * temperature**0.3 * nHGround 
 
-
-@dataclass(eq=False)
-class VdwRidderRensbergen(VdwApprox):
-    # NOTE(cmo): RidderRensbergen actually uses all 4 VdW coeffs
-    def setup(self, line: 'AtomicLine', table: AtomicTable):
-        self.line = line
-        if len(self.vals) != 4:
-            raise ValueError('VdwRidderRensbergen expects 4 coefficients (%s)' % (repr(line)))
-
-        name = line.atom.name
-        self.gammaCorrH = 1e-8 * Const.CM_TO_M**3 \
-                        * (1.0 + table['H'].weight / table[name].weight)**self.vals[1]
-        self.gammaCorrHe = 1e-9 * Const.CM_TO_M**3 \
-                       * (1.0 + table['He'].weight / table[name].weight)**self.vals[3]
-        self.HeAbund = table['He'].abundance
-
-    def broaden(self, temperature, nHGround, broad):
-        broad[:] = self.gammaCorrH * self.vals[0] * temperature**self.vals[1] \
-                + self.gammaCorrHe * self.vals[2] * temperature**self.vals[3] \
-                    * self.HeAbund
-        broad *= nHGround
-
-@dataclass(eq=False)
-class VdwBarklem(VdwApprox):
-    # NOTE(cmo): Since Helium is treated as per Unsold, only 3 vals are used
-    def setup(self, line: 'AtomicLine', table: AtomicTable):
-        self.line = line
-        if len(self.vals) != 2:
-            raise ValueError('VdwBarklem expects 2 coefficients (%s)' % (repr(line)))
-        self.barklem = Barklem(table)
-        try:
-            newVals = self.barklem.get_active_cross_section(line.atom, line)
-        except:
-            raise VdwBarklemIncompatible
-        
-        self.vals = newVals
-
-        Z = line.jLevel.stage + 1
-        j = line.j
-        ic = j + 1
-        while line.atom.levels[ic].stage < Z:
-            ic += 1
-        cont = line.atom.levels[ic]
-
-        deltaR = (Const.ERydberg / (cont.E_SI - line.jLevel.E_SI))**2 \
-                 - (Const.ERydberg / (cont.E_SI - line.iLevel.E_SI))**2
-        fourPiEps0 = 4.0 * np.pi * Const.Epsilon0
-        C625 = (2.5 * Const.QElectron**2 / fourPiEps0 * Const.ABarH / fourPiEps0 \
-                   * 2 * np.pi * (Z * Const.RBohr)**2 / Const.HPlanck * deltaR)**0.4
-
-        name = line.atom.name
-
-        vRel35He = (8.0 * Const.KBoltzmann / (np.pi*Const.Amu * table[name].weight)\
-                    * (1.0 + table[name].weight / table['He'].weight))**0.3
-
-        heAbund = table['He'].abundance
-        self.cross = 8.08 * self.vals[2] * heAbund * vRel35He * C625
-
-    def broaden(self, temperature, nHGround, broad):
-        broad[:] = self.vals[0] * temperature**(0.5*(1.0-self.vals[1])) \
-                    + self.cross * temperature**0.3
-        broad *= nHGround
-        
 @dataclass
 class AtomicTransition:
     def __eq__(self, other: object) -> bool:
@@ -355,13 +287,7 @@ class VoigtLine(AtomicLine):
         self.jLevel: AtomicLevel = self.atom.levels[self.j]
         self.iLevel: AtomicLevel = self.atom.levels[self.i]
 
-        try:
-            self.vdw.setup(self, atom.atomicTable)
-        except VdwBarklemIncompatible:
-            print("Unable to treat line %d->%d of atom %s with Barklem broadening, using Unsold." % (self.j, self.i, self.atom.name))
-            vals = self.vdw.vals
-            self.vdw = VdwUnsold(vals)
-            self.vdw.setup(self, atom.atomicTable)
+        self.vdw.setup(self, atom.atomicTable)
 
     def __repr__(self):
         s = 'VoigtLine(j=%d, i=%d, f=%e, type=%s, NlambdaGen=%d, qCore=%f, qWing=%f, vdw=%s, gRad=%e, stark=%f' % (
@@ -420,27 +346,6 @@ class VoigtLine(AtomicLine):
         return stark
 
     def setup_wavelength(self):
-        # self.xrd = []
-
-        # # This is just a hack to keep the search happy
-        # self.wavelength = np.zeros(1)
-        # # NOTE(cmo): This is currently disabled -- we're not gonna do XRD anyway
-        # if self.type == LineType.PRD and False:
-
-        #     thisIdx = self.atom.lines.index(self)
-
-        #     for i, l in enumerate(self.atom.lines):
-        #         if l.type == LineType.PRD and l.j == self.j and l.i != self.i:
-        #             self.xrd.append(l)
-
-        #             if i > thisIdx:
-        #                 waveratio = self.xrd[-1].lambda0 / self.lambda0
-        #                 self.xrd[-1].qWing = waveratio * self.qWing
-
-        #     if len(self.xrd) > 0:
-        #         print("Found %d subordinate PRD lines, for line %d->%d of atom %s" % \
-        #             (len(self.xrd), self.j, self.i, self.atom.name))
-
         if self.preserveWavelength:
             print('preserveWavelength set on %s, ignoring NlambdaGen' % (repr(self)))
             return
@@ -448,7 +353,6 @@ class VoigtLine(AtomicLine):
         # Compute default lambda grid
         Nlambda = self.NlambdaGen // 2 if self.NlambdaGen % 2 == 1 else (self.NlambdaGen - 1) // 2
         Nlambda += 1
-        # Nlambda = self.Nlambda // 2 if self.Nlambda % 2 == 1 else (self.Nlambda + 1) // 2
 
         if self.qWing <= 2.0 * self.qCore:
             # Use linear scale to qWing
@@ -516,8 +420,6 @@ class VoigtLine(AtomicLine):
             return ZeemanComponents(alpha, strength, shift)
 
         return None
-
-
 
     def polarised_wavelength(self, bChar: Optional[float]=None) -> Sequence[float]:
         ## NOTE(cmo): bChar in TESLA
