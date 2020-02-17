@@ -7,10 +7,11 @@ from atomic_model import AtomicLine, AtomicContinuum, AtomicModel, VoigtLine
 from atmosphere import Atmosphere
 from atomic_set import SpectrumConfiguration, AtomicStateTable
 from atomic_table import AtomicTable
+from formal_solver import piecewise_linear_1d, IPsi
 import constants as Const
 from background import Background
 from numba import njit
-from utils import voigt_H, planck
+from utils import voigt_H
 from typing import cast
 
 @dataclass
@@ -121,8 +122,6 @@ class ComputationalTransition:
 
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
-
-
 class ComputationalAtom:
     def __init__(self, atom: AtomicModel, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable):
         self.atomicModel = atom
@@ -198,89 +197,6 @@ class ComputationalAtom:
         # NOTE(cmo): Some rates use splines that can, in odd cases, go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
 
-@dataclass
-class IPsi:
-    I: np.ndarray
-    PsiStar: np.ndarray
-
-@njit
-def w2(dtau):
-    w = np.empty(2)
-    if dtau < 5e-4:
-        w[0] = dtau * (1.0 - 0.5*dtau)
-        w[1] = dtau**2 * (0.5 - dtau / 3.0)
-    elif dtau > 50.0:
-        w[0] = 1.0
-        w[1] = 1.0
-    else:
-        expdt = np.exp(-dtau)
-        w[0] = 1.0 - expdt
-        w[1] = w[0] - dtau * expdt
-    return w
-
-@njit
-def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
-    Nspace = chi.shape[0]
-    zmu = 0.5 / muz
-
-    if toFrom:
-        dk = -1
-        kStart = Nspace - 1
-        kEnd = 0
-    else:
-        dk = 1
-        kStart = 0
-        kEnd = Nspace - 1
-
-    dtau_uw = zmu * (chi[kStart] + chi[kStart + dk]) * np.abs(z[kStart] - z[kStart + dk])
-    dS_uw = (S[kStart] - S[kStart + dk]) / dtau_uw
-
-    Iupw = Istart
-    I = np.zeros(Nspace)
-    Psi = np.zeros(Nspace)
-    I[kStart] = Iupw
-    Psi[kStart] = 0.0
-
-    for k in range(kStart + dk, kEnd + dk, dk):
-        w = w2(dtau_uw)
-
-        if k != kEnd:
-            dtau_dw = zmu * (chi[k] + chi[k+dk]) * np.abs(z[k] - z[k+dk])
-            dS_dw = (S[k] - S[k+dk]) / dtau_dw
-            I[k] = (1.0 - w[0]) * Iupw + w[0] * S[k] + w[1] * dS_uw
-            Psi[k] = w[0] - w[1] / dtau_uw
-        else:
-            I[k] = (1.0 - w[0]) * Iupw + w[0] * S[k] + w[1] * dS_uw
-            Psi[k] = w[0] - w[1] / dtau_uw
-        
-        Iupw = I[k]
-        dS_uw = dS_dw
-        dtau_uw = dtau_dw
-
-    return I, Psi / chi
-
-def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
-    zmu = 0.5 / atmos.muz[mu]
-    z = atmos.height
-
-    if toFrom:
-        dk = -1
-        kStart = atmos.Nspace - 1
-        kEnd = 0
-    else:
-        dk = 1
-        kStart = 0
-        kEnd = atmos.Nspace - 1
-
-    if toFrom:
-        dtau_uw = zmu * (chi[kStart] + chi[kStart + dk]) * np.abs(z[kStart] - z[kStart + dk])
-        Bnu = planck(atmos.temperature[-2:], wav)
-        Iupw = Bnu[1] - (Bnu[0] - Bnu[1]) / dtau_uw
-    else:
-        Iupw = 0.0
-
-    I, Psi = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
-    return IPsi(I, Psi)
 
 class Context:
     def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable, background: Background):

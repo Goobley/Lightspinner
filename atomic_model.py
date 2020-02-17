@@ -6,7 +6,6 @@ import re
 
 import numpy as np
 from scipy.interpolate import interp1d
-from parse import parse
 
 import constants as Const
 from utils import gaunt_bf
