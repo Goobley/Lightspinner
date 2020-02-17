@@ -4,7 +4,7 @@ _Learn radiative transfer like it's 1992!_
 
 ### C. Osborne (University of Glasgow), 2020, MIT License
 
-Lightspinner is a pure python optically thick radiative transfer code using the Rybicki-Hummer Multi-level Accelerated Lambda Iteration (MALI) formalism.
+Lightspinner is a relatively simple, but complete pure python optically thick radiative transfer (RT) code using the Rybicki-Hummer Multi-level Accelerated Lambda Iteration (MALI) formalism.
 It is, in essence, a stripped down version of [Lightweaver](https://github.com/Goobley/Lightweaver) with the aim of teaching the methods used in optically thick RT to make them more accessible.
 That is, if you learn methods by reading code, like I do.
 It uses the full preconditioning method of Rybicki & Hummer (1992) with the ability to handle overlapping lines, but under the assumption of complete redistribution.
@@ -20,7 +20,7 @@ This environment should then be ready for action and you should be able to easil
 ### References
 
 ##### Everything
-- [HM] Hubeny, Ivan & Mihalas, Dimitri (2015). _Theroy of Stellar Atmospheres: An Introduction to Astrophysical Non-equilibrium Quantitive Spectroscopic Analysis_. Princeton University Press. ISBN: 9780691163291.
+- [HM] Hubeny, Ivan & Mihalas, Dimitri (2015). _Theory of Stellar Atmospheres: An Introduction to Astrophysical Non-equilibrium Quantitive Spectroscopic Analysis_. Princeton University Press. ISBN: 9780691163291.
 
 ##### MALI Methods
 - [[RH91] Rybicki, G. B.; Hummer D. G. (1991). A&A, **245**, 171-181](https://ui.adsabs.harvard.edu/abs/1991A%26A...245..171R)
@@ -33,5 +33,5 @@ This environment should then be ready for action and you should be able to easil
 
 ### Acknowledgements
 - The [python implementation](https://github.com/jaimedelacruz/witt) of the Wittmann equation of state kindly provided J. de la Cruz Rodriguez.
-- Many methods are inspired by approaches taken in the [RH](https://github.com/ITA-Solar/rh) code by H. Uitenbroek (linked version is the 1.5D version as discussed in [Pereira & Uitenbroek (2015)](https://ui.adsabs.harvard.edu/abs/2015A%26A...574A...3P))
+- Many methods are inspired by approaches taken in the [RH](https://github.com/ITA-Solar/rh) code by H. Uitenbroek [U01] (linked version is the 1.5D version described in [Pereira & Uitenbroek (2015)](https://ui.adsabs.harvard.edu/abs/2015A%26A...574A...3P))
 - Many thanks to Ivan Milić for all his help getting this stuff into my head!
