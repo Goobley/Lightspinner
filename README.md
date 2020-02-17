@@ -1,35 +1,37 @@
-# Lightweaver
+# Lightspinner
 
-**C. Osborne (University of Glasgow) & I. Milić (NSO/CU Boulder), 2019**
+_Learn radiative transfer like it's 1992!_
 
-**MIT License**
+### C. Osborne (University of Glasgow), 2020, MIT License
 
-Lightweaver is an NLTE radiative transfer code in the style of [RH](https://github.com/ITA-Solar/rh). It is well validated against RH and also [SNAPI](https://github.com/ivanzmilic/snapi). The code is currently designed for plane parallel atmospheres, either 1D single columns (wavelength parallelisation in progress) or 1.5D parallel columns with (currently) `ProcessPool` parallelisation.
+Lightspinner is a pure python optically thick radiative transfer code using the Rybicki-Hummer Multi-level Accelerated Lambda Iteration (MALI) formalism.
+It is, in essence, a stripped down version of [Lightweaver](https://github.com/Goobley/Lightweaver) with the aim of teaching the methods used in optically thick RT to make them more accessible.
+That is, if you learn methods by reading code, like I do.
+It uses the full preconditioning method of Rybicki & Hummer (1992) with the ability to handle overlapping lines, but under the assumption of complete redistribution.
+The formal solver is currently using simple piecewise linear short characteristics, due to its simplicity and the pedagogic benefits thereof. 
 
-Whilst the core numerics are implented in C++, as much of the non-performance critical code as possible is implemented in Python, and the code currently only has a Python interface (provided through a Cython binding module). These bindings could be rewritten in another language, so long as the same information can be provided to the C++ core.
+### Setup
 
-The aim of Lightweaver is to provide an NLTE Framework, rather than a "code". That is to say, it should be more maleable, and provide easier access to experimentation, with most forms of experimentation (unless one wants to play with formal solvers or iteration schemes), being available directly from python.
+Requires python 3.7+.
+For those that use `conda` the `environment.yml` can be used to create a Lightspinner environment complete with all necessary packages with `conda env create -f environment.yml`.
+This can then be activated with `conda activate Lightspinner`.
+This environment should then be ready for action and you should be able to easily produce the spectrum of Ca II in a FALC atmosphere with `ipython -i test.py`.
 
-### Installation
+### References
 
-Requirements:
+##### Everything
+- [HM] Hubeny, Ivan & Mihalas, Dimitri (2015). _Theroy of Stellar Atmospheres: An Introduction to Astrophysical Non-equilibrium Quantitive Spectroscopic Analysis_. Princeton University Press. ISBN: 9780691163291.
 
-    - C++17 Compiler
-    - Python 3.7+
+##### MALI Methods
+- [[RH91] Rybicki, G. B.; Hummer D. G. (1991). A&A, **245**, 171-181](https://ui.adsabs.harvard.edu/abs/1991A%26A...245..171R)
+- [[RH92] Rybicki, G. B.; Hummer D. G. (1992). A&A, **262**, 209-215](https://ui.adsabs.harvard.edu/abs/1992A%26A...262..209R)
+- [[U01] Uitenbroek, H. (2001). ApJ, **557**, 389-398](https://ui.adsabs.harvard.edu/abs/2001ApJ...557..389U)
 
-The code isn't currently packaged as a module, (this will happen when we hit beta), so code is designed to be run in the project directory for now.
-Due to the use of C++ and the Cython build system it appears to be necessary when clang isn't the default compiler to set the local shell variable `CC` to the name of your C++ compiler (e.g. `g++-9`) before invoking the build script.
-
-The build is then run with `python3 -m pip install -vvv -e .`. The libraries currently produce a few warnings, but should not produce any errors.
-At this point one of the test scripts can be run (see [the samples repository](https://github.com/Goobley/LightweaverSamples)). I suggest using interactive mode for this and then plotting the results.
-
-Some of these test scripts show examples of how to do 1.5D parallel column-by-column synthesis, and parallel numeric NLTE response functions.
-
-### Documentation
-
-Documentation is currently on the non-existent end. This will also be written properly as we approach beta. I suggest looking through the `Test*.py` files and the `Judge*.py` files (for time-dependent populations).
-
+##### Short Characteristic Formal Solvers
+- [Kunasz, P.; Auer L. H. (1988). JQSRT, **39**, 67-79](https://ui.adsabs.harvard.edu/abs/1988JQSRT..39...67K)
+- [Auer, L. H.; Paletou F. (1994). A&A, **285**, 675-686](https://ui.adsabs.harvard.edu/abs/1994A%26A...285..675A)
 
 ### Acknowledgements
-
-The [python implementation](https://github.com/jaimedelacruz/witt) of the Wittmann equation of state kindly provided J. de la Cruz Rodriguez.
+- The [python implementation](https://github.com/jaimedelacruz/witt) of the Wittmann equation of state kindly provided J. de la Cruz Rodriguez.
+- Many methods are inspired by approaches taken in the [RH](https://github.com/ITA-Solar/rh) code by H. Uitenbroek (linked version is the 1.5D version as discussed in [Pereira & Uitenbroek (2015)](https://ui.adsabs.harvard.edu/abs/2015A%26A...574A...3P))
+- Many thanks to Ivan Milić for all his help getting this stuff into my head!

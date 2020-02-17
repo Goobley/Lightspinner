@@ -3,17 +3,16 @@ from rh_atoms import CaII_atom, H_6_atom
 from atomic_set import RadiativeSet
 from rh_method import Context
 from background import Background
+import matplotlib.pyplot as plt
 
 atmosConst = Falc82()
 atmosConst.quadrature(5)
 atmos = atmosConst.convert_scales()
 
 aSet = RadiativeSet([CaII_atom(), H_6_atom()])
-aSet.set_active('Ca')
+aSet.set_active('H')
 spect = aSet.compute_wavelength_grid()
 eqPops = aSet.compute_eq_pops(atmos)
-# NOTE(cmo): Doesn't fix -- line cores are too deep
-# eqPops['H'].nStar[:] = atmosConst.hydrogenPops.value
 
 background = Background(atmos, spect)
 ctx = Context(atmos, spect, eqPops, background)
@@ -31,5 +30,5 @@ while dJ > 2e-3 or dPops > 1e-3:
 
     dPops = ctx.stat_equil()
 
-
-
+plt.plot(spect.wavelength, ctx.I[:, -1])
+plt.show()

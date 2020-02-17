@@ -16,12 +16,94 @@ from typing import cast
 
 @dataclass
 class UV:
+    """A contained for the [RH92]/[U01] Uji, Vij and Vji terms.
+    """
     Uji: np.ndarray
     Vij: np.ndarray
     Vji: np.ndarray
 
 class ComputationalTransition:
+    """A container to hold the computational state of any transition (line or
+    continuum).
+
+    ...
+    Attributes
+    ----------
+    transModel : Union[AtomicLine, AtomicContinuum]
+        The model of the transition present in the atomic model.
+    atom : ComputationAtom
+        The "parent" atom of this transition.
+    i : int
+        The index of the lower level of this transition in the parent atom.
+    j : int
+        The index of the upper level of this transition in the parent atom.
+    wavelength :  np.ndarray
+        The wavelength grid over which this transition is integrated.
+    isLine : bool
+        True if the transition represents an atomic line.
+    Aji : float
+        The Einstein A for the transition (lines only).
+    Bji : float
+        The Einstein Bji for the transition (lines only).
+    Bij : float
+        The Einstein Bij for the transition (lines only).
+    lambda0 : float
+        The rest wavelenght for this transition (lines only).
+    phi : np.ndarray (4D)
+        The line profile in for each [lambda, mu, toFrom, depthPoint] (lines
+        only).
+    wphi : np.ndarray
+        The weighting factor for integrating the line profile s.t. 
+        \int d\nu d\Omega phi = 1
+        at each depth in the atmosphere (lines only).
+    alpha : np.ndarray
+        The cross section at each wavelength in the transition's wavelength
+        grid (continua only).
+    Nblue : int
+        The index of the bluest (smallest) entry of the line's wavelength
+        grid in the global wavelength array.
+    active :  np.ndarray of bool
+        An array of bools with the same length as the global wavelength array
+        indicating the wavelengths when the transition is "active" and should
+        be taken considered in the RT calculation.
+    gij : np.ndarray
+        g_{ij} for each depth point as defined in (26) of [U01], attached to
+        this class as a view from the "parent" atom.
+    Rij : np.ndarray
+        The radiative excitation rate for each depth point.
+    Rji : np.ndarray
+        The radiative deexcitation rate for each depth point.
+
+    Methods
+    -------
+    lt(la: int) -> int
+        Returns the index into the local wavelength array for a given index
+        in the global array. Does no verification.
+    wlambda(self, la: Optional[int]=None) -> Union[float, np.ndarray]
+        Returns the wavelength integration weight for a single point (if
+        index provided), or the whole wavelength grid.
+    compute_phi(self, atmos: Atmosphere)
+        Computes the line profile and normalisation terms for lines. Does
+        nothing for continua.
+    uv(self, la, mu, toFrom) -> UV
+        Returns the U and V terms from [RH92]/[U01] for the transition at a
+        given frequency, ray and direction index.
+    """
+
     def __init__(self, trans: Union[AtomicLine, AtomicContinuum], compAtom: 'ComputationalAtom', atmos: Atmosphere, spect: SpectrumConfiguration):
+        """
+        Parameters
+        ----------
+        trans : Union[AtomicLine, AtomicContinuum]
+            The transition model from the atomic model object.
+        compAtom : ComputationalAtom
+            The "parent" atom to this transition.
+        atmos :  Atmosphere
+            The stratified atmosphere we will be solving the RTE over.
+        spect : SpectrumConfiguration
+            The object describing the wavelength discretisation and set of
+            active transitions at each frequency.
+        """
         self.transModel = trans
         self.atom = compAtom
         self.wavelength = trans.wavelength
@@ -49,10 +131,50 @@ class ComputationalTransition:
         self.Rji = np.zeros(atmos.Nspace)
 
     def lt(self, la: int) -> int:
+        """Map from the index into the global wavelength array to the index
+        in the local wavelength array.
+
+        Parameters
+        ----------
+        la : int
+            Index into global wavelength array
+
+        Returns
+        -------
+        lt : int
+            Index into the transition's wavelength array
+        """
+
         return la - self.Nblue
 
+    @property
+    def isLine(self):
+        """Return if the transition represents a line.
+        """
+
+        return isinstance(self.transModel, AtomicLine)
+
     def wlambda(self, la: Optional[int]=None) -> Union[float, np.ndarray]:
-        if isinstance(self.transModel, AtomicLine):
+        """Return the wavelength integration weights for the transition.
+
+        For continua the weight is simply \Delta\lambda, whereas for lines we
+        choose to use Doppler units (without thermal velocity factor) of
+        c / \lambda_0, as this preserves wphi \approx 1.0.
+
+        Parameters
+        ----------
+        la : Optional[int]=None
+            An index into the transition's wavelength array. If provided then
+            only the weight for this index is returned.
+        
+        Returns
+        -------
+        float or np.ndarray
+            The wavelength integration weight, either for the requested
+            point, or the entire wavelength grid.
+        """
+
+        if self.isLine:
             dopplerWidth = Const.CLight / self.lambda0
         else:
             dopplerWidth = 1.0
@@ -73,11 +195,25 @@ class ComputationalTransition:
         return dopplerWidth * wla
 
     def compute_phi(self, atmos: Atmosphere):
+        """Compute the absorption profile and normalisation coefficient for a
+        spectral line.
+
+        This function computes self.phi and self.wphi if the associated
+        transition is an atomic line. Here phi is a 4D array [lambda, mu,
+        up/down, depth] and wphi an array of the (multiplicative)
+        normalisation coefficient per depth point.
+
+        Parameters
+        ----------
+        atmos : Atmosphere
+            The stratified atmosphere over which to compute the line profile.
+        """
+
         if isinstance(self.transModel, AtomicContinuum):
             return
 
         sqrtPi = np.sqrt(np.pi)
-        aDamp, Qelast = self.transModel.damping(atmos, self.atom.vBroad, self.atom.hPops.nStar[0])
+        aDamp, Qelast = self.transModel.damping(atmos, self.atom.vBroad, self.atom.hPops.n[0])
         phi = np.zeros((self.transModel.Nlambda, atmos.Nrays, 2, atmos.Nspace))
         wPhi = np.zeros(atmos.Nspace)
 
@@ -100,14 +236,30 @@ class ComputationalTransition:
         self.phi = phi
 
     def uv(self, la, mu, toFrom) -> UV:
+        """Compute the Uji, Vij and Vji coefficients from [RH92] and [U01]
+        for this transition for an wavelength, angle and direction.
+
+        Parameters
+        ----------
+        la : int
+            Index of the current wavelength to be solved (in the global
+            wavelength array).
+        mu : int
+            Index of the current mu (cosine of angle to normal) in the
+            atmos.muz array.
+        toFrom : bool
+            If the desired solution is along the ray towards the observer
+            (upgoing/True) or away (downgoing/False).
+        """
+
         lt = self.lt(la)
 
         hc_4pi = 0.25 * Const.HC / np.pi
 
-        if isinstance(self.transModel, AtomicLine):
+        if self.isLine:
             # NOTE(cmo): (2) of [U01] under the assumption of CRD (i.e. phi == psi).
             # Implented as per (26) of [U01].
-            # However, the assumption of CRD can be lifted without changing any code.
+            # However, the assumption of CRD can be lifted without changing any code
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
             phi = self.phi[lt, mu, toFrom, :]
@@ -123,13 +275,108 @@ class ComputationalTransition:
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
 class ComputationalAtom:
+    """Stores the state of an atom and its transitions during iteration.
+
+    ...
+    Attributes
+    ----------
+    atomicModel : AtomicModel
+        The complete model atom.
+    atomicTable : AtomicTable
+        The atomic table (with correct abundances etc.) to be used in the
+        calculations.
+    spect : SpectrumConfiguration
+        The object describing the wavelength discretisation and set of
+        active transitions at each frequency.
+    atmos : Atmosphere
+        The stratified atmosphere on which the RTE and ESE are to be solved.
+    vBroad : np.ndarray
+        The broadening velocity of the atom at each depth point in the
+        atmosphere (thermal and microturbulence).
+    pops : AtomicState
+        The populations object for this atom from the AtomicStateTable.
+    hPops : AtomicState
+        The populations object for H from the AtomicStateTable.
+    nStar : np.ndarray (2D)
+        The LTE populations for this species [level, depth].
+    n : np.ndarray (2D)
+        The NLTE populations for this species [level, depth].
+    nTotal : np.ndarray
+        The total population of this species per depth point.
+    trans : List[ComputationalTransition]
+        List of objects used to hold the computational state of each
+        transition.
+    Ntrans : int
+        Number of transitions in atomic model over the wavelength range
+        defined in spect.
+    Nlevel : int
+        Number of levels in atomic model.
+    Gamma : np.ndarray (3D)
+        RH Gamma matrix for atom [level, level, depth].
+    C : np.ndarray (3D)
+        RH-style C matrix for atom [level, level, depth]. Collisional rates
+        are loaded into this matrix in "transposed" form, i.e. Cij in C[j,
+        i], so that it can be added directly to Gamma.
+    eta : np.ndarray
+        Scratch array for storing the emissivity in all of the transitions of
+        an atom in one iteration of the formal solver.
+    gij : np.ndarray (2D)
+        Array for storing gij per transition [trans, depth] as described by
+        (26) of [U01].
+    wla : np.ndarray (2D)
+        Array for storing the "d\nu"/"dwavelength" integration weights per
+        transition [trans, depth].
+    U : np.ndarray
+        Scratch array for storing the \sum_{ji}U_{ji} term that appears in
+        the MALI method (per level) [level, depth].
+    chi : np.ndarray
+        Scratch array for storing the effective opacity term that appears in
+        the MALI method (per level) [level, depth].
+
+    Methods
+    -------
+    setup_wavelength(self, laIdx: int)
+        Configure the scratch matrices for the coming wavelength (of index
+        laIdx in the global array) and precalculate the terms that are
+        constant over angle (gij & wla).
+    zero_angle_dependent_vars(self)
+        Zero the scratch matrices that are needed for afresh for every
+        directional formal solution whilst computing the terms for the Gamma
+        matrix (eta, U, and chi).
+    setup_Gamma(self)
+        Zero the Gamma matrix.
+    compute_collisions(self)
+        Compute the collisional rates from the AtomicModel and Atmosphere,
+        and store the results in their transposed form in C.
+    """
+
     def __init__(self, atom: AtomicModel, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable):
+        """
+        Parameters
+        ----------
+        atom : AtomicModel
+            The atomic model for which this object is being constructed to
+            hold its computation data during iteration of the NLTE
+            populations.
+        atmos : Atmosphere
+            The atmosphere over which a NLTE solution is to be found.
+        spect : SpectrumConfiguration
+            The object describing the wavelength discretisation and set of
+            active transitions at each frequency.
+        eqPops : AtomicStateTable
+            The LTE (and possibly NLTE) populations of each species present
+            in the atmosphere that is being considered in detail. If the NLTE
+            populations are set for this atom then the NLTE computational
+            populations will start there, otherwise the system will start
+            from LTE populations.
+        """
+
         self.atomicModel = atom
         self.atomicTable = eqPops.atomicTable
         self.spect = spect
         self.atmos = atmos
 
-        self.vBroad = atom.vBroad(atmos)
+        self.vBroad = atom.v_broad(atmos)
 
         self.pops = eqPops[atom.name]
         self.hPops = eqPops['H']
@@ -148,12 +395,26 @@ class ComputationalAtom:
         self.Gamma = np.zeros((Nlevel, Nlevel, atmos.Nspace))
         self.C = np.zeros((Nlevel, Nlevel, atmos.Nspace))
         self.nStar = self.pops.nStar
-        self.n = np.copy(self.nStar)
+        # NOTE(cmo): if NLTE populations are specified then use them
+        if self.pops.pops is not None:
+            self.n = self.pops.pops
+        else:
+            self.n = np.copy(self.nStar)
+            self.pops.pops = self.n
 
         self.Nlevel = Nlevel
         self.Ntrans = len(self.trans)
 
+        # NOTE(cmo): Call setup wavelength so that all of the transitions
+        # correctly have all of their arrays initialised
+        self.setup_wavelength(0)
+
     def setup_wavelength(self, laIdx: int):
+        """Configure the scratch matrices for the coming wavelength (of index
+        laIdx in the global array) and precalculate the terms that are
+        constant over angle (gij & wla).
+        """
+
         Nspace = self.atmos.Nspace
         self.eta = np.zeros(Nspace)
         self.gij = np.zeros((self.Ntrans, Nspace))
@@ -165,41 +426,115 @@ class ComputationalAtom:
         h_4pi = 0.25 * Const.HPlanck / np.pi
         hc_4pi = h_4pi * Const.CLight
         for kr, t in enumerate(self.trans):
+            t.gij = self.gij[kr]
             if not t.active[laIdx]:
                 continue
 
             # NOTE(cmo): gij for transition kr following (26) in [U01]
             # NOTE(cmo): wla for transition kr: weighting term in wavelength integral for transition
-            if isinstance(t.transModel, AtomicLine):
+            if t.isLine:
                 self.gij[kr, :] = t.Bji / t.Bij
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / hc_4pi
             else:
                 self.gij[kr, :] = self.nStar[t.i] / self.nStar[t.j] \
                     * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / h_4pi
-            t.gij = self.gij[kr]
 
     def zero_angle_dependent_vars(self):
+        """
+        Zero the scratch matrices that are needed for afresh for every
+        directional formal solution whilst computing the terms for the Gamma
+        matrix (eta, U, and chi).
+        """
+
         self.eta.fill(0.0)
         self.U.fill(0.0)
         self.chi.fill(0.0)
 
     def setup_Gamma(self):
+        """Zero the Gamma matrix.
+        """
+
         self.Gamma.fill(0.0)
 
     def compute_collisions(self):
+        """Compute the collisional rates from the AtomicModel and Atmosphere,
+        and store the results in their transposed form in C.
+        """
+
         self.C = np.zeros_like(self.Gamma)
         # NOTE(cmo): Get colllisional rates from each term on the atomic model.
         # They are added to the correct location in the C matrix so it can be added directly to Gamma. 
-        # i.e. A rate from j to i is put into C[i, j]
+        # i.e. The rate from j to i is put into C[i, j]
         for col in self.atomicModel.collisions:
             col.compute_rates(self.atmos, self.nStar, self.C)
-        # NOTE(cmo): Some rates use splines that can, in odd cases, go negative, so make sure that doesn't happen
+        # NOTE(cmo): Some rates use spline interpolants that can, in odd cases,
+        # go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
 
 
 class Context:
+    """Context to adminster the formal solution and compute the Gamma matrix
+    for a collection of active atoms over a provided set of wavelengths.
+
+    ...
+    Attributes
+    ----------
+    atmos : Atmosphere
+        The stratified atmosphere on which the RTE and ESE are to be solved.
+    spect : SpectrumConfiguration
+        The object containing the atomic models and wavelength
+        discretisation and set of active transitions at each frequency.
+    background : Background
+        An object containing the background opacity (chi), emissivity
+        (eta) and scattering (sca) for each wavelength to be solved for
+        in spect (and depth in the atmosphere).
+    eqPops : AtomicStateTable
+        The LTE (and possibly NLTE) populations of each species present
+        in the atmosphere that is being considered in detail. If the NLTE
+        populations are set for this atom then the NLTE computational
+        populations will start there, otherwise the system will start
+        from LTE populations.
+    activeAtoms : List[ComputationalAtom]
+        The computational data for the atoms that are being for which the ESE
+        and RTE are being solved to find their NLTE populations.
+    I : np.ndarray (2D)
+        The outgoing radiation as per wavelength point and ray [lambda, mu].
+    J : np.ndarray (2D)
+        The angle averaged intensity at each wavelength and depth [lambda,
+        depth].
+
+    Methods
+    -------
+    formal_sol_gamma_matrices(self)
+        Perform the formal solution over all specified wavelengths and angles
+        and fill in the Gamma matrix.
+    stat_equil(self)
+        Update the populations of all active species towards statistical
+        equilibrium, using the current version of the Gamma matrix.
+    """
+
     def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable, background: Background):
+        """
+        Parameters
+        ----------
+        atmos : Atmosphere
+            The stratified atmosphere on which the RTE and ESE are to be solved.
+        spect : SpectrumConfiguration
+            The object containing the atomic models and wavelength
+            discretisation and set of active transitions at each frequency.
+        eqPops : AtomicStateTable
+            The LTE (and possibly NLTE) populations of each species present
+            in the atmosphere that is being considered in detail. If the NLTE
+            populations are set for this atom then the NLTE computational
+            populations will start there, otherwise the system will start
+            from LTE populations.
+        background : Background
+            An object containing the background opacity (chi), emissivity
+            (eta) and scattering (sca) for each wavelength to be solved for
+            in spect (and depth in the atmosphere).
+        """
+
         self.atmos = atmos
         self.atmos.nondimensionalise()
         self.spect = spect
@@ -214,6 +549,20 @@ class Context:
         self.I = np.zeros((spect.wavelength.shape[0], atmos.Nrays))
 
     def formal_sol_gamma_matrices(self):
+        """Perform the formal solution over all specified wavelengths and angles
+        and fill in the Gamma matrix.
+
+        This function applies the method of [RH92] and [U01] to construct the
+        Gamma matrix for the given, possibly overlapping, transitions on the
+        given common wavelength grid, with specified angle quadrature for a
+        plane-parallel atmosphere.
+
+        Returns
+        -------
+        dJ : float
+            The maximum relative update of the local angle-averaged intensity J
+        """
+
         Nspace = self.atmos.Nspace
         Nrays = self.atmos.Nrays
         Nspect = self.spect.wavelength.shape[0]
@@ -335,6 +684,15 @@ class Context:
         return dJMax
 
     def stat_equil(self):
+        """Update the populations of all active species towards statistical
+        equilibrium, using the current version of the Gamma matrix.
+
+        Returns
+        -------
+        maxRelChange : float
+            The maximum relative change in any of the atomic populations (at
+            the depth point with maximum population change).
+        """
         Nspace = self.atmos.Nspace
 
         maxRelChange = 0.0

@@ -20,8 +20,8 @@ class AtomicModel:
     collisions: Sequence['CollisionalRates']
     atomicTable: AtomicTable = field(default_factory=get_global_atomic_table)
 
-    # @profile
     def __post_init__(self):
+        self.name = self.name.upper()
         for l in self.levels:
             l.setup(self)
 
@@ -63,7 +63,7 @@ class AtomicModel:
         self.atomicTable = table
         self.__post_init__()
 
-    def vBroad(self, atmos):
+    def v_broad(self, atmos):
         vTherm = 2.0 * Const.KBoltzmann / (Const.Amu * self.atomicTable[self.name].weight)
         vBroad = np.sqrt(vTherm * atmos.temperature + atmos.vturb**2)
         return vBroad

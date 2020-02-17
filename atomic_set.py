@@ -188,6 +188,7 @@ class AtomicState:
     model: AtomicModel
     nStar: np.ndarray
     nTotal: np.ndarray
+    pops: Optional[np.ndarray] = None
 
     def __repr__(self):
         return 'AtomicModelPops(name=%s(%d), nStar=%s, nTotal=%s, pops=%s)' % (self.model.name, hash(self.model), repr(self.nStar), repr(self.nTotal), repr(self.pops))
@@ -195,8 +196,14 @@ class AtomicState:
     def __hash__(self):
         return hash(repr(self))
 
-    def update_nTotal(self, atmos):
-        self.nTotal[:] = self.model.atomicTable[self.name].abundance * atmos.nHTot.value
+    def update_nTotal(self, atmos : Atmosphere):
+        dim = False
+        if atmos.dimensioned:
+            dim = True
+            atmos.nondimensionalise()
+        self.nTotal[:] = self.model.atomicTable[self.name].abundance * atmos.nHTot
+        if dim:
+            atmos.dimensionalise()
 
     @property
     def name(self):
@@ -209,6 +216,20 @@ class AtomicState:
     @property
     def weight(self):
         return self.model.atomicTable[self.model.name].weight
+
+    @property
+    def n(self) -> np.ndarray:
+        if self.pops is not None:
+            return self.pops
+        else:
+            return self.nStar
+
+    @n.setter
+    def n(self, val: np.ndarray):
+        if val.shape != self.nStar.shape:
+            raise ValueError('Incorrect dimensions for population array, expected %s, got %s.' % (repr(self.nStar.shape), repr(val.shape)))
+        self.pops = val
+
 
 @dataclass
 class RadiativeSet:
@@ -340,6 +361,10 @@ class RadiativeSet:
         return table
 
     def compute_eq_pops(self, atmos: Atmosphere):
+        dim = False
+        if atmos.dimensioned:
+            dim = True
+            atmos.nondimensionalise()
         atomicPops = []
         for a in sorted(self.atoms, key=atomic_weight_sort):
             nTotal = self.atomicTable[a.name].abundance * atmos.nHTot.value
@@ -347,6 +372,8 @@ class RadiativeSet:
             atomicPops.append(AtomicState(a, nStar, nTotal))
 
         table = AtomicStateTable(atmos, self.atomicTable, atomicPops)
+        if dim:
+            atmos.dimensionalise
         return table
 
     def compute_wavelength_grid(self, extraWavelengths: Optional[np.ndarray]=None, lambdaReference=500.0) -> SpectrumConfiguration:

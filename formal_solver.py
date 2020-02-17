@@ -7,6 +7,7 @@ from utils import planck
 class IPsi:
     """Holder for the I and PsiStar arrays in a single object.
     """
+
     I: np.ndarray
     PsiStar: np.ndarray
 
@@ -28,6 +29,7 @@ def w2(dtau):
         a Taylor series for small dtau, and set to constant values for large
         dtau.
     """
+
     w = np.empty(2)
     if dtau < 5e-4:
         w[0] = dtau * (1.0 - 0.5*dtau)
@@ -84,6 +86,7 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
         The approximate Psi operator (diagonal of the Lambda operator) at
         each point on the grid (1D array).
     """
+
     Nspace = chi.shape[0]
     # NOTE(cmo): Since a smaller mu "increases" the perceived thickness of the slab, the factor we need to use if 1/mu
     zmu = 1.0 / muz
@@ -182,6 +185,7 @@ def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
         A dataclass containing the intensity approximate Psi operator at each
         point in the atmosphere.
     """
+
     zmu = 1.0 / atmos.muz[mu]
     z = atmos.height
 
