@@ -629,14 +629,21 @@ class Context:
                     for atom in self.activeAtoms:
                         # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using 
                         # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply 
-                        # the sum of \eta in the currently active transitions in an atom
+                        # the sum of \eta in the currently active transitions in an atom.
+                        # I find (2.20) of RH92 a little confusing here, as I
+                        # believe they are working on the assumption of only
+                        # one active species, with possible overlapping
+                        # transitions. To me, the expression in [U01] is
+                        # clearer.
                         Ieff = iPsi.I - iPsi.PsiStar * atom.eta
 
                         for kr, t in enumerate(atom.trans):
                             if not t.active[la]:
                                 continue
 
-                            # NOTE(cmo): wlamu is the product of angle and wavelength integration weights (*0.5 for up/down)
+                            # NOTE(cmo): wlamu is the product of angle and
+                            # wavelength integration weights (*0.5 for up/down
+                            # component)
                             wmu = 0.5 * self.atmos.wmu[mu]
                             wlamu = atom.wla[kr] * wmu
 
@@ -660,7 +667,7 @@ class Context:
                             # the n_l\daggers in the _critical summations_ (the final terms on both sides of (2.16)) -- the
                             # populations we preserve from the previous iteration are already wrapped up in the atom.chi
                             # term, and all other terms will be multiplied by their associated new populations when we do
-                            # \Gamma \cdot \vec{n} = \vec{0}.
+                            # \Gamma \cdot \vec{n} = \vec{0} i.e. statistical equilbirum.
 
                             # NOTE(cmo): Radiative rates component for this angle and frequency
                             # as per (28) of [U01] or (2.8) or [RH92]
