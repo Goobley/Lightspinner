@@ -103,7 +103,6 @@ class SpectrumConfiguration:
 
 
 def lte_pops(atomicModel, atmos, nTotal, debye=True):
-    atmos.nondimensionalise()
     Nlevel = len(atomicModel.levels)
     c1 = (Const.HPlanck / (2.0 * np.pi * Const.MElectron)) * (Const.HPlanck / Const.KBoltzmann)
 
@@ -143,7 +142,6 @@ def lte_pops(atomicModel, atmos, nTotal, debye=True):
     for i in range(1, Nlevel):
         nStar[i] *= nStar[0]
 
-    atmos.dimensionalise()
     return nStar
 
 class AtomicStateTable:

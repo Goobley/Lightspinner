@@ -10,7 +10,7 @@ atmosConst.quadrature(5)
 atmos = atmosConst.convert_scales()
 
 aSet = RadiativeSet([CaII_atom(), H_6_atom()])
-aSet.set_active('H')
+aSet.set_active('Ca')
 spect = aSet.compute_wavelength_grid()
 eqPops = aSet.compute_eq_pops(atmos)
 
