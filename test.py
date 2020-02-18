@@ -26,7 +26,7 @@ while dJ > 2e-3 or dPops > 1e-3:
 
     if i > 3:
         dPops = ctx.stat_equil()
-    print('Iteration %d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
+    print('Iteration %.3d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
 
 plt.plot(spect.wavelength, ctx.I[:, -1])
 plt.show()

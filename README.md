@@ -5,10 +5,10 @@ _Learn radiative transfer like it's 1992!_
 ### C. Osborne (University of Glasgow), 2020, MIT License
 
 Lightspinner is a relatively simple, but complete pure python optically thick radiative transfer (RT) code using the Rybicki-Hummer Multi-level Accelerated Lambda Iteration (MALI) formalism.
-It is, in essence, a stripped down version of [Lightweaver](https://github.com/Goobley/Lightweaver) with the aim of teaching the methods used in optically thick RT to make them more accessible.
+It is, in essence, a stripped down version of [Lightweaver](https://github.com/Goobley/Lightweaver) with the aim of teaching the methods used in optically thick RT and making them more accessible.
 That is, if you learn methods by reading code, like I do.
-It uses the full preconditioning method of Rybicki & Hummer (1992) with the ability to handle overlapping lines, but under the assumption of complete redistribution.
-The formal solver is currently using simple piecewise linear short characteristics, due to its simplicity and the pedagogic benefits thereof. 
+It uses the full preconditioning method of Rybicki & Hummer (1992) with the ability to handle overlapping transitions, but under the assumption of complete redistribution.
+The formal solver is currently using simple piecewise linear short characteristics due to its simplicity and the pedagogic benefits thereof. 
 
 ### Setup
 
