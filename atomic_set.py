@@ -367,7 +367,7 @@ class RadiativeSet:
             atmos.nondimensionalise()
         atomicPops = []
         for a in sorted(self.atoms, key=atomic_weight_sort):
-            nTotal = self.atomicTable[a.name].abundance * atmos.nHTot.value
+            nTotal = self.atomicTable[a.name].abundance * atmos.nHTot
             nStar = lte_pops(a, atmos, nTotal, debye=True)
             atomicPops.append(AtomicState(a, nStar, nTotal))
 
