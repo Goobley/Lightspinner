@@ -158,8 +158,9 @@ class ComputationalTransition:
         """Return the wavelength integration weights for the transition.
 
         For continua the weight is simply \Delta\lambda, whereas for lines we
-        choose to use Doppler units (without thermal velocity factor) of
-        c / \lambda_0, as this preserves wphi \approx 1.0.
+        choose to use Doppler units (without thermal velocity factor) of c /
+        \lambda_0, as this preserves wphi \approx 1.0. The thermal velocity
+        factor appears in the line profile.
 
         Parameters
         ----------
@@ -201,7 +202,13 @@ class ComputationalTransition:
         This function computes self.phi and self.wphi if the associated
         transition is an atomic line. Here phi is a 4D array [lambda, mu,
         up/down, depth] and wphi an array of the (multiplicative)
-        normalisation coefficient per depth point.
+        normalisation coefficient per depth point. The normalisation of this
+        Voigt profile is slightly different to many but is equivalent to RH &
+        Lightweaver in that it isn't normalised to be integrated over
+        frequency, but instead in Doppler units and is therefore a factor of
+        lambda_0 smaller than is often used. This has an effect on the
+        expression used for the U and V coefficients for bound-bound
+        transitions.
 
         Parameters
         ----------
@@ -239,6 +246,10 @@ class ComputationalTransition:
         """Compute the Uji, Vij and Vji coefficients from [RH92] and [U01]
         for this transition for an wavelength, angle and direction.
 
+        The bound-bound coefficients appear a factor of \lambda_0 larger than
+        those presented in the previous papers. This term is encompassed in
+        the line profile phi.
+
         Parameters
         ----------
         la : int
@@ -258,8 +269,10 @@ class ComputationalTransition:
 
         if self.isLine:
             # NOTE(cmo): (2) of [U01] under the assumption of CRD (i.e. phi == psi).
-            # Implented as per (26) of [U01].
-            # However, the assumption of CRD can be lifted without changing any code
+            # Implented as per (26) of [U01]. These appear a factor of
+            # \lambda_0 larger than is correct, but this factor is encompassed
+            # in phi.
+            # The assumption of CRD can be lifted without changing any code
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
             phi = self.phi[lt, mu, toFrom, :]
@@ -423,8 +436,6 @@ class ComputationalAtom:
         self.chi = np.zeros((self.Nlevel, Nspace))
 
         hc_k = Const.HC / (Const.KBoltzmann * Const.NM_TO_M)
-        h_4pi = 0.25 * Const.HPlanck / np.pi
-        hc_4pi = h_4pi * Const.CLight
         for kr, t in enumerate(self.trans):
             t.gij = self.gij[kr]
             if not t.active[laIdx]:
@@ -433,12 +444,15 @@ class ComputationalAtom:
             # NOTE(cmo): gij for transition kr following (26) in [U01]
             # NOTE(cmo): wla for transition kr: weighting term in wavelength integral for transition
             if t.isLine:
+                # NOTE(cmo): Like for U and V, these rates also appear to be
+                # off by a factor of \lambda, but aren't due to the use Doppler
+                # units (inside wlambda).
                 self.gij[kr, :] = t.Bji / t.Bij
-                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / hc_4pi
+                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / Const.HC
             else:
                 self.gij[kr, :] = self.nStar[t.i] / self.nStar[t.j] \
                     * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
-                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / h_4pi
+                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
 
     def zero_angle_dependent_vars(self):
         """
@@ -645,7 +659,10 @@ class Context:
                             # wavelength integration weights (*0.5 for up/down
                             # component)
                             wmu = 0.5 * self.atmos.wmu[mu]
-                            wlamu = atom.wla[kr] * wmu
+                            # NOTE(cmo): The 4pi term here represents the
+                            # factor for integrating over all solid angles,
+                            # rather than simply averaging.
+                            wlamu = atom.wla[kr] * wmu * 4 * np.pi
 
                             uv = t.uv(la, mu, toFrom)
 

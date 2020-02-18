@@ -22,13 +22,11 @@ dPops = 1.0
 i = 0
 while dJ > 2e-3 or dPops > 1e-3:
     i += 1
-    print(i, dJ, dPops)
     dJ = ctx.formal_sol_gamma_matrices()
 
-    if i <= 3:
-        continue
-
-    dPops = ctx.stat_equil()
+    if i > 3:
+        dPops = ctx.stat_equil()
+    print('Iteration %d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
 
 plt.plot(spect.wavelength, ctx.I[:, -1])
 plt.show()
