@@ -19,7 +19,9 @@ If you want to have a go at implementing the MALI method, then the `formal_sol_g
 Requires python 3.7+.
 For those that use `conda` the `environment.yml` can be used to create a Lightspinner environment complete with all necessary packages with `conda env create -f environment.yml`.
 This can then be activated with `conda activate Lightspinner`.
-This environment should then be ready for action and you should be able to easily produce the spectrum of Ca II in a FALC atmosphere with `ipython -i test.py`.
+This environment should then be ready for action and you should be able to easily produce the spectrum of Ca II in a FALC atmosphere with `ipython -i test.py`. It should look like this:
+
+![Spectrum of CaII](CaII.png)
 
 ### References
 
