@@ -263,9 +263,7 @@ class ComputationalTransition:
             (upgoing/True) or away (downgoing/False).
         """
 
-        lt = self.lt(la)
-
-        hc_4pi = 0.25 * Const.HC / np.pi
+        raise NotImplementedError
 
         if self.isLine:
             # NOTE(cmo): (2) of [U01] under the assumption of CRD (i.e. phi == psi).
@@ -275,15 +273,8 @@ class ComputationalTransition:
             # The assumption of CRD can be lifted without changing any code
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
-            phi = self.phi[lt, mu, toFrom, :]
-            Vij = hc_4pi * self.Bij * phi
-            Vji = self.gij * Vij
-            Uji = self.Aji / self.Bji * Vji
         else:
             # NOTE(cmo): (3) of [U01] using the expression for gij given in (26)
-            Vij = self.alpha[lt]
-            Vji = self.gij * Vij
-            Uji = 2.0 * Const.HC / (Const.NM_TO_M * self.wavelength[lt])**3 * Vji
 
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
@@ -584,17 +575,15 @@ class Context:
 
         activeAtoms = self.activeAtoms
 
-        for atom in activeAtoms:
-            atom.setup_Gamma()
-            atom.compute_collisions()
-            atom.Gamma += atom.C
+        raise NotImplementedError
 
-        JDag = np.copy(self.J)
-        self.J.fill(0.0)
+        # NOTE(cmo): Set up the iteration matrices on the atoms -- compute
+        # collisions and sum.
+
+        # NOTE(cmo): Save Jdag and zero J.
 
         for la, wav in enumerate(self.spect.wavelength):
-            for atom in activeAtoms:
-                atom.setup_wavelength(la)
+            # NOTE(cmo): Set up per wavelength arrays on each atom
 
             for mu in range(Nrays):
                 for toFrom, sign in enumerate([-1.0, 1.0]):
@@ -602,45 +591,33 @@ class Context:
                     etaTot = np.zeros(Nspace)
 
                     for atom in activeAtoms:
-                        atom.zero_angle_dependent_vars()
-                        for t in atom.trans:
-                            if not t.active[la]:
-                                continue
+                        # NOTE(cmo): Zero angle dependent variables and check active
 
-                            uv = t.uv(la, mu, toFrom)
                             # NOTE(cmo): Compute opacity and emissivity in transition t
                             # Equation (1) in [U01]
-                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
-                            eta = atom.n[t.j] * uv.Uji
 
                             # NOTE(cmo): Add the opacity to the lower level
                             # Subtract the opacity from the upper level (stimulated emission)
                             # The atom.chi matrix is then simply the total "effective opacity" for each atomic level
-                            atom.chi[t.i] += chi
-                            atom.chi[t.j] -= chi
+
                             # NOTE(cmo): Accumulate U, this is like the chi matrix
-                            atom.U[t.j] += uv.Uji
+
                             # NOTE(cmo): Accumulate onto total opacity and emissivity 
                             # as well as total emissivity in the atom -- needed for Ieff
-                            chiTot += chi
-                            etaTot += eta
-                            atom.eta += eta
 
                     # NOTE(cmo): Accumulate background opacity
-                    chiTot += background.chi[la]
+
                     # NOTE(cmo): Compute source function
-                    S = (etaTot + background.eta[la] + background.sca[la] * JDag[la]) / chiTot
 
                     # NOTE(cmo): Compute formal solution and approximate operator PsiStar
-                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
+
                     # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
                     # but the outgoing rays happen after so we can simply save it every subiteration
-                    self.I[la, mu] = iPsi.I[0]
+
                     # NOTE(cmo): Add contribution to local mean intensity field Jbar
-                    self.J[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+
 
                     # NOTE(cmo): Construct Gamma matrix for each atom
-                    for atom in self.activeAtoms:
                         # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using 
                         # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply 
                         # the sum of \eta in the currently active transitions in an atom.
@@ -649,22 +626,17 @@ class Context:
                         # one active species, with possible overlapping
                         # transitions. To me, the expression in [U01] is
                         # clearer.
-                        Ieff = iPsi.I - iPsi.PsiStar * atom.eta
 
-                        for kr, t in enumerate(atom.trans):
-                            if not t.active[la]:
-                                continue
+                        # NOTE(cmo): Loop over each active transtion
 
                             # NOTE(cmo): wlamu is the product of angle and
                             # wavelength integration weights (*0.5 for up/down
                             # component)
-                            wmu = 0.5 * self.atmos.wmu[mu]
+
                             # NOTE(cmo): The 4pi term here represents the
                             # factor for integrating over all solid angles,
                             # rather than simply averaging.
-                            wlamu = atom.wla[kr] * wmu * 4 * np.pi
 
-                            uv = t.uv(la, mu, toFrom)
 
                             # NOTE(cmo): Add the contributions to the Gamma matrix
                             # Follow (2.19) in [RH92] or (24) in [U01] -- we use the properties
@@ -674,11 +646,7 @@ class Context:
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
                             # extremely handy here, as they essentially serve as all of the
                             # bookkeeping for filling Gamma
-                            integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * iPsi.PsiStar * atom.U[t.j])
-                            atom.Gamma[t.i, t.j] += integrand * wlamu
 
-                            integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * iPsi.PsiStar * atom.U[t.i])
-                            atom.Gamma[t.j, t.i] += integrand * wlamu
                             # NOTE(cmo): Compare equations (2.16) and (2.19) in [RH92] -- note how all non-dagger terms are of
                             # course gone from (2.19) since the new populations are evaluated when in the matrix solution, and
                             # the n_l\daggers in the _critical summations_ (the final terms on both sides of (2.16)) -- the
@@ -688,19 +656,11 @@ class Context:
 
                             # NOTE(cmo): Radiative rates component for this angle and frequency
                             # as per (28) of [U01] or (2.8) or [RH92]
-                            t.Rij += iPsi.I * uv.Vij * wlamu
-                            t.Rji += (uv.Uji + iPsi.I * uv.Vij) * wlamu
 
         # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
         # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums 
         # of every other entry on their column in Gamma.
-        for atom in activeAtoms:
-            for k in range(Nspace):
-                np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
-                for i in range(atom.Nlevel):
-                    GamDiag = np.sum(atom.Gamma[:, i, k])
-                    atom.Gamma[i, i, k] = -GamDiag
 
         dJ = np.abs(1.0 - JDag / self.J)
         dJMax = dJ.max()
