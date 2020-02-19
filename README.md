@@ -10,6 +10,10 @@ That is, if you learn methods by reading code, like I do.
 It uses the full preconditioning method of Rybicki & Hummer (1992) with the ability to handle overlapping transitions, but under the assumption of complete redistribution.
 The formal solver is currently using simple piecewise linear short characteristics due to its simplicity and the pedagogic benefits thereof. 
 
+### DIY
+
+If you want to have a go at implementing the MALI method, then the `formal_sol_gamma_matrices` and `uv` functions in `rh_method.py` have been left documented but not complete on the `DIY` branch. It would also be an interesting exercise to extend the formal solver to use the monotonic piecewise parabolic method of Auer & Paletou (1994).
+
 ### Setup
 
 Requires python 3.7+.
