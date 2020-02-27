@@ -105,7 +105,9 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
 
     # dtau_uw = average opacity          *             slab thickness
     dtau_uw = 0.5 * (chi[kStart] + chi[kStart + dk]) * zmu * np.abs(z[kStart] - z[kStart + dk])
-    # dS_uw = dS / dtau
+    # NOTE(cmo): dS_uw = dS / dtau i.e. c_1 on slides. Direction is opposite to
+    # forward derivative in z as "increases" away from the point at which we're
+    # solving -- in all directions.
     dS_uw = (S[kStart] - S[kStart + dk]) / dtau_uw
 
     Iupw = Istart
