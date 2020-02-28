@@ -1,9 +1,11 @@
 from fal import Falc82
 from rh_atoms import CaII_atom, H_6_atom
 from atomic_set import RadiativeSet
-from rh_method import Context, tm_prod
+from rh_method import Context, tm_prod, make_block_tridiag
 from background import Background
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy.linalg import solve
 
 atmosConst = Falc82()
 atmosConst.quadrature(5)
@@ -23,7 +25,9 @@ i = 0
 # while dJ > 2e-3 or dPops > 1e-3:
 i += 1
 dJ = ctx.formal_sol_gamma_matrices()
-tm = tm_prod(ctx.activeAtoms[0].Gamma, ctx.activeAtoms[0].n)
+td, sol = make_block_tridiag(ctx.activeAtoms[0].Gamma, ctx.activeAtoms[0].n)
+s = solve(td, sol)
+s = s.reshape(82, 6)
 
 #     if i > 3:
 #         dPops = ctx.stat_equil()

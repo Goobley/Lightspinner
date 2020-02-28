@@ -487,7 +487,7 @@ class ComputationalAtom:
         self.C[self.C < 0.0] = 0.0
 
 
-# @njit
+@njit
 def tm_prod(Gamma, n):
     print(Gamma.shape, n.shape)
     n = n.reshape(Gamma.shape[1], Gamma.shape[2])
@@ -503,6 +503,39 @@ def tm_prod(Gamma, n):
     prod[:, Nspace-1] += Gamma[:,:,-1,0] @ n[:, -2]
 
     return prod
+
+def make_block_tridiag(Gamma, n):
+    side = Gamma.shape[1] * Gamma.shape[2]
+    BigGamma = np.zeros((side, side))
+    g = Gamma.shape[0]
+    Nspace = Gamma.shape[2]
+    sol = np.zeros(side)
+
+    BigGamma[:g, :g] = Gamma[:, :, 0, 1]
+    BigGamma[:g, g:2*g] = Gamma[:, :, 0, 2]
+
+    iEliminate = np.argmax(n[:, 0])
+    BigGamma[iEliminate, :] = 0.0
+    BigGamma[iEliminate, :g] = 1.0
+    sol[iEliminate] = np.sum(n[:, 0])
+    for k in range(1, Nspace-1):
+        BigGamma[k*g:(k+1)*g, k*g:(k+1)*g] = Gamma[:, :, k, 1]
+        BigGamma[k*g:(k+1)*g, (k-1)*g:k*g] = Gamma[:, :, k, 0]
+        BigGamma[k*g:(k+1)*g, (k+1)*g:(k+2)*g] = Gamma[:, :, k, 2]
+
+        iEliminate = np.argmax(n[:, k])
+        BigGamma[k*g+iEliminate, :] = 0.0
+        BigGamma[k*g+iEliminate, k*g:(k+1)*g] = 1.0
+        sol[k*g+iEliminate] = np.sum(n[:, k])
+
+    BigGamma[-g:, -g:] = Gamma[:, :, Nspace-1, 1]
+    BigGamma[-g:, -2*g:-g] = Gamma[:, :, Nspace-1, 0]
+    iEliminate = np.argmax(n[:, -1])
+    BigGamma[(Nspace-1)*g+iEliminate, :] = 0.0
+    BigGamma[(Nspace-1)*g+iEliminate, -g:] = 1.0
+    sol[(Nspace-1)*g+iEliminate] = np.sum(n[:, -1])
+    return BigGamma, sol
+
 
 class Context:
     """Context to adminster the formal solution and compute the Gamma matrix
@@ -604,7 +637,14 @@ class Context:
         for atom in activeAtoms:
             atom.setup_Gamma()
             atom.compute_collisions()
-            atom.Gamma += atom.C[:,:,:,None]
+            atom.Gamma[:,:,:,1] += atom.C
+        # NOTE(cmo): Sort out collisional rates into diagonal of Gamma
+        for atom in activeAtoms:
+            for k in range(Nspace):
+                np.fill_diagonal(atom.Gamma[:, :, k, 1], 0.0)
+                for i in range(atom.Nlevel):
+                    GamDiag = np.sum(atom.Gamma[:, i, k, 1])
+                    atom.Gamma[i, i, k, 1] = -GamDiag
 
         JDag = np.copy(self.J)
         self.J.fill(0.0)
@@ -691,21 +731,38 @@ class Context:
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
                             # extremely handy here, as they essentially serve as all of the
                             # bookkeeping for filling Gamma
+
+                            # REF: ExplicitGammaConstruction >>>>>
+
+                            # integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * iPsi.PsiStar * atom.U[t.j])
+                            # atom.Gamma[t.i, t.j] += integrand * wlamu
+                            # atom.Gamma[t.j, t.j, :] -= integrand * wlamu
+
+                            # integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * iPsi.PsiStar * atom.U[t.i])
+                            # atom.Gamma[t.j, t.i] += integrand * wlamu
+                            # atom.Gamma[t.i, t.i, :] -= integrand * wlamu
+
+                            # REF: ExplicitGammaConstruction <<<<<
+
                             integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * np.diag(iPsi.PsiStar) * atom.U[t.j])
                             atom.Gamma[t.i, t.j, :, 1] += integrand * wlamu
+                            atom.Gamma[t.j, t.j, :, 1] -= integrand * wlamu
                             integrand = -(atom.chi[t.i, 1:] * np.diag(iPsi.PsiStar, k=-1) * atom.U[t.j, 1:])
                             atom.Gamma[t.i, t.j, 1:, 0] += integrand * wlamu[1:]
+                            atom.Gamma[t.j, t.j, 1:, 0] -= integrand * wlamu[1:]
                             integrand = -(atom.chi[t.i, :-1] * np.diag(iPsi.PsiStar, k=1) * atom.U[t.j, :-1])
                             atom.Gamma[t.i, t.j, :-1, 2] += integrand * wlamu[:-1]
-                            atom.Gamma[t.j, t.j, :, 0] = -(uv.Uji + uv.Vji * Ieff)
+                            atom.Gamma[t.j, t.j, :-1, 2] -= integrand * wlamu[:-1]
 
                             integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * np.diag(iPsi.PsiStar) * atom.U[t.i])
                             atom.Gamma[t.j, t.i, :, 1] += integrand * wlamu
-                            integrand =  -(atom.chi[t.j, 1:] * np.diag(iPsi.PsiStar, k=-1) * atom.U[t.i, 1:])
+                            atom.Gamma[t.i, t.i, :, 1] -= integrand * wlamu
+                            integrand =  -(atom.chi[t.j, :-1] * np.diag(iPsi.PsiStar, k=-1) * atom.U[t.i, 1:])
                             atom.Gamma[t.j, t.i, 1:, 0] += integrand * wlamu[1:]
-                            integrand =  -(atom.chi[t.j, :-1] * np.diag(iPsi.PsiStar, k=1) * atom.U[t.i, :-1])
+                            atom.Gamma[t.i, t.i, 1:, 0] -= integrand * wlamu[1:]
+                            integrand =  -(atom.chi[t.j, 1:] * np.diag(iPsi.PsiStar, k=1) * atom.U[t.i, :-1])
                             atom.Gamma[t.j, t.i, :-1, 2] += integrand * wlamu[:-1]
-                            atom.Gamma[t.i, t.i, :, 0] = -(uv.Vij * Ieff)
+                            atom.Gamma[t.i, t.i, :-1, 2] -= integrand * wlamu[:-1]
 
                             # NOTE(cmo): Compare equations (2.16) and (2.19) in [RH92] -- note how all non-dagger terms are of
                             # course gone from (2.19) since the new populations are evaluated when in the matrix solution, and
@@ -745,29 +802,36 @@ class Context:
             The maximum relative change in any of the atomic populations (at
             the depth point with maximum population change).
         """
-        Nspace = self.atmos.Nspace
+        # Nspace = self.atmos.Nspace
 
-        maxRelChange = 0.0
-        for atom in self.activeAtoms:
-            Nlevel = atom.Nlevel
-            for k in range(Nspace):
-                # NOTE(cmo): Find the level with the maximum population at this depth point
-                iEliminate = np.argmax(atom.n[:, k])
-                # NOTE(cmo): Copy the Gamma matrix so we can modify it to contain the total number conservation equation
-                Gamma = np.copy(atom.Gamma[:, :, k])
+        # maxRelChange = 0.0
+        # for atom in self.activeAtoms:
+        #     Nlevel = atom.Nlevel
+        #     for k in range(Nspace):
+        #         # NOTE(cmo): Find the level with the maximum population at this depth point
+        #         iEliminate = np.argmax(atom.n[:, k])
+        #         # NOTE(cmo): Copy the Gamma matrix so we can modify it to contain the total number conservation equation
+        #         Gamma = np.copy(atom.Gamma[:, :, k])
 
-                # NOTE(cmo): Set all entries on the row to eliminate to 1.0 for number conservation
-                Gamma[iEliminate, :] = 1.0
-                # NOTE(cmo): Set solution vector to 0 (as per stat. eq.) other than entry for which we are conserving population
-                nk = np.zeros(Nlevel)
-                nk[iEliminate] = atom.nTotal[k]
+        #         # NOTE(cmo): Set all entries on the row to eliminate to 1.0 for number conservation
+        #         Gamma[iEliminate, :] = 1.0
+        #         # NOTE(cmo): Set solution vector to 0 (as per stat. eq.) other than entry for which we are conserving population
+        #         nk = np.zeros(Nlevel)
+        #         nk[iEliminate] = atom.nTotal[k]
 
-                # NOTE(cmo): Solve Gamma . n = 0 (constrained by conservation equation)
-                nOld = np.copy(atom.n[:, k])
-                nNew = solve(Gamma, nk)
-                # NOTE(cmo): Compute relative change and update populations
-                change = np.abs(1.0 - nOld / nNew)
-                maxRelChange = max(maxRelChange, change.max())
-                atom.n[:, k] = nNew
+        #         # NOTE(cmo): Solve Gamma . n = 0 (constrained by conservation equation)
+        #         nOld = np.copy(atom.n[:, k])
+        #         nNew = solve(Gamma, nk)
+        #         # NOTE(cmo): Compute relative change and update populations
+        #         change = np.abs(1.0 - nOld / nNew)
+        #         maxRelChange = max(maxRelChange, change.max())
+        #         atom.n[:, k] = nNew
 
+        prevPops = np.copy(self.activeAtoms[0].n)
+        td, sol = make_block_tridiag(self.activeAtoms[0].Gamma, self.activeAtoms[0].n)
+        s = solve(td, sol)
+        s = s.reshape(82, 6)
+        s = s.T
+        maxRelChange = np.max(np.abs(1.0 - prevPops / s))
+        self.activeAtoms[0].n[:] = np.ascontiguousarray(s)
         return maxRelChange
