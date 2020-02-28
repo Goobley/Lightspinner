@@ -2,6 +2,7 @@ import numpy as np
 from numba import njit
 from dataclasses import dataclass
 from utils import planck
+from scipy.sparse import dia_matrix
 
 @dataclass
 class IPsi:
@@ -10,6 +11,7 @@ class IPsi:
 
     I: np.ndarray
     PsiStar: np.ndarray
+    PsiStarStar: np.ndarray
 
 @njit
 def w2(dtau):
@@ -112,34 +114,63 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
 
     Iupw = Istart
     I = np.zeros(Nspace)
-    LambdaStar = np.zeros(Nspace)
+    LambdaStar = np.zeros((Nspace, Nspace))
+    LambdaStarStar = np.zeros(Nspace)
     # NOTE(cmo): Initial point is equation to boundary condition
     I[kStart] = Iupw
-    LambdaStar[kStart] = 0.0
+    LambdaStarStar[kStart] = 0.0
+    LambdaStar[kStart, kStart] = 0.0
+    LambdaStar[kStart, kStart+dk] = 0.0
 
     for k in range(kStart + dk, kEnd, dk):
         # NOTE(cmo): Get analytic integration terms
         w = w2(dtau_uw)
+        # NOTE(cmo): For previous depth point to avoid recalculating w
+        LambdaStar[k-dk, k+dk] = LambdaStar[k-dk, k] * (1 - w[0])
 
         # NOTE(cmo): Compute I and LambdaStar
         # (1.0 - w[0]) = exp(-dtau) as w[0] as w[0] = 1 - exp(-dtau) and this saves us recomputing the exp
-        I[k] = Iupw * (1.0 - w[0]) + w[0] * S[k] + w[1] * dS_uw
-        LambdaStar[k] = w[0] - w[1] / dtau_uw
+        uwFac = w[1] / dtau_uw
+        I[k] = Iupw * (1.0 - w[0]) + (w[0] - uwFac) * S[k] + uwFac * S[k-dk]
+        LambdaStarStar[k] = (w[0] - uwFac)
         # NOTE(cmo): dtau_dw and dS_dw like uw for next iteration
         dtau_dw = 0.5 * (chi[k] + chi[k+dk]) * zmu * np.abs(z[k] - z[k+dk])
         dS_dw = (S[k] - S[k+dk]) / dtau_dw
+        LambdaStar[k, k-dk] = uwFac
+        LambdaStar[k, k] = uwFac * (1.0 - w[0]) + (w[0] - uwFac)
         
         # NOTE(cmo): Set values (Iupw, dS_uw, dtau_uw) for next iteration
         Iupw = I[k]
         dS_uw = dS_dw
         dtau_uw = dtau_dw
 
+    w = w2(dtau_uw)
     # NOTE(cmo): Do final point (exactly the same in this linear scheme)
     I[kEnd] = (1.0 - w[0]) * Iupw + w[0] * S[k] + w[1] * dS_uw
-    LambdaStar[kEnd] = w[0] - w[1] / dtau_uw
+    LambdaStar[kEnd, kEnd-dk] = w[1] / dtau_uw
+    LambdaStar[kEnd, kEnd] = LambdaStar[1-dk, kEnd] * (1.0  - w[0]) + (w[0] - w[1] / dtau_uw)
+    LambdaStarStar[kEnd] = (w[0] - w[1] / dtau_uw)
 
     # NOTE(cmo): Correctly make PsiStar by dividing LambdaStar by chi
-    return I, LambdaStar / chi
+    for k in range(kStart + dk, kEnd, dk):
+        LambdaStar[k, k-dk] /= chi[k-dk]
+        LambdaStar[k, k] /= chi[k]
+        LambdaStar[k, k+dk] /= chi[k+dk]
+
+    LambdaStar[kEnd, kEnd-dk] /= chi[kEnd-dk]
+    LambdaStar[kEnd, kEnd] /= chi[kEnd]
+
+    # LambdaStar[1, :] /= chi
+    # # I think
+    # if toFrom:
+    #     LambdaStar[1-dk, :-1] /= chi[1:] 
+    #     LambdaStar[1+dk, 1:] /= chi[:-1]
+    # else:
+    #     LambdaStar[1-dk, 1:] /= chi[:-1] 
+    #     LambdaStar[1+dk, :-1] /= chi[1:]
+
+
+    return I, LambdaStar, LambdaStarStar / chi
 
 def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
     """One-dimensional Piecewise linear formal solver
@@ -208,5 +239,5 @@ def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
     else:
         Iupw = 0.0
 
-    I, PsiStar = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
-    return IPsi(I, PsiStar)
+    I, PsiStar, PsiStarStar = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
+    return IPsi(I, PsiStar, PsiStarStar)

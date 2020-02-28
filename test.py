@@ -1,7 +1,7 @@
 from fal import Falc82
 from rh_atoms import CaII_atom, H_6_atom
 from atomic_set import RadiativeSet
-from rh_method import Context
+from rh_method import Context, tm_prod
 from background import Background
 import matplotlib.pyplot as plt
 
@@ -20,13 +20,14 @@ ctx = Context(atmos, spect, eqPops, background)
 dJ = 1.0
 dPops = 1.0
 i = 0
-while dJ > 2e-3 or dPops > 1e-3:
-    i += 1
-    dJ = ctx.formal_sol_gamma_matrices()
+# while dJ > 2e-3 or dPops > 1e-3:
+i += 1
+dJ = ctx.formal_sol_gamma_matrices()
+tm = tm_prod(ctx.activeAtoms[0].Gamma, ctx.activeAtoms[0].n)
 
-    if i > 3:
-        dPops = ctx.stat_equil()
-    print('Iteration %.3d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
+#     if i > 3:
+#         dPops = ctx.stat_equil()
+#     print('Iteration %.3d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
 
-plt.plot(spect.wavelength, ctx.I[:, -1])
-plt.show()
+# plt.plot(spect.wavelength, ctx.I[:, -1])
+# plt.show()

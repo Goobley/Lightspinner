@@ -405,7 +405,7 @@ class ComputationalAtom:
                 self.trans.append(ComputationalTransition(c, self, atmos, spect))
 
         Nlevel = len(atom.levels)
-        self.Gamma = np.zeros((Nlevel, Nlevel, atmos.Nspace))
+        self.Gamma = np.zeros((Nlevel, Nlevel, atmos.Nspace, 3))
         self.C = np.zeros((Nlevel, Nlevel, atmos.Nspace))
         self.nStar = self.pops.nStar
         # NOTE(cmo): if NLTE populations are specified then use them
@@ -476,7 +476,7 @@ class ComputationalAtom:
         and store the results in their transposed form in C.
         """
 
-        self.C = np.zeros_like(self.Gamma)
+        self.C = np.zeros_like(self.C)
         # NOTE(cmo): Get colllisional rates from each term on the atomic model.
         # They are added to the correct location in the C matrix so it can be added directly to Gamma. 
         # i.e. The rate from j to i is put into C[i, j]
@@ -486,6 +486,23 @@ class ComputationalAtom:
         # go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
 
+
+# @njit
+def tm_prod(Gamma, n):
+    print(Gamma.shape, n.shape)
+    n = n.reshape(Gamma.shape[1], Gamma.shape[2])
+    Nspace = Gamma.shape[2]
+    prod = np.zeros_like(n)
+    prod[:, 0] = Gamma[:,:,0,1] @ n[:,0]
+    prod[:, 0] += Gamma[:,:,0,2] @ n[:,1]
+    for k in range(1, Nspace-1):
+        prod[:, k] = Gamma[:,:,k,1] @ n[:,k]
+        prod[:, k] += Gamma[:,:,k,0] @ n[:,k-1]
+        prod[:, k] += Gamma[:,:,k,2] @ n[:,k+1]
+    prod[:, Nspace-1] = Gamma[:,:,-1,1] @ n[:, -1]
+    prod[:, Nspace-1] += Gamma[:,:,-1,0] @ n[:, -2]
+
+    return prod
 
 class Context:
     """Context to adminster the formal solution and compute the Gamma matrix
@@ -587,7 +604,7 @@ class Context:
         for atom in activeAtoms:
             atom.setup_Gamma()
             atom.compute_collisions()
-            atom.Gamma += atom.C
+            atom.Gamma += atom.C[:,:,:,None]
 
         JDag = np.copy(self.J)
         self.J.fill(0.0)
@@ -649,7 +666,7 @@ class Context:
                         # one active species, with possible overlapping
                         # transitions. To me, the expression in [U01] is
                         # clearer.
-                        Ieff = iPsi.I - iPsi.PsiStar * atom.eta
+                        Ieff = iPsi.I - iPsi.PsiStar @ atom.eta
 
                         for kr, t in enumerate(atom.trans):
                             if not t.active[la]:
@@ -674,11 +691,22 @@ class Context:
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
                             # extremely handy here, as they essentially serve as all of the
                             # bookkeeping for filling Gamma
-                            integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * iPsi.PsiStar * atom.U[t.j])
-                            atom.Gamma[t.i, t.j] += integrand * wlamu
+                            integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * np.diag(iPsi.PsiStar) * atom.U[t.j])
+                            atom.Gamma[t.i, t.j, :, 1] += integrand * wlamu
+                            integrand = -(atom.chi[t.i, 1:] * np.diag(iPsi.PsiStar, k=-1) * atom.U[t.j, 1:])
+                            atom.Gamma[t.i, t.j, 1:, 0] += integrand * wlamu[1:]
+                            integrand = -(atom.chi[t.i, :-1] * np.diag(iPsi.PsiStar, k=1) * atom.U[t.j, :-1])
+                            atom.Gamma[t.i, t.j, :-1, 2] += integrand * wlamu[:-1]
+                            atom.Gamma[t.j, t.j, :, 0] = -(uv.Uji + uv.Vji * Ieff)
 
-                            integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * iPsi.PsiStar * atom.U[t.i])
-                            atom.Gamma[t.j, t.i] += integrand * wlamu
+                            integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * np.diag(iPsi.PsiStar) * atom.U[t.i])
+                            atom.Gamma[t.j, t.i, :, 1] += integrand * wlamu
+                            integrand =  -(atom.chi[t.j, 1:] * np.diag(iPsi.PsiStar, k=-1) * atom.U[t.i, 1:])
+                            atom.Gamma[t.j, t.i, 1:, 0] += integrand * wlamu[1:]
+                            integrand =  -(atom.chi[t.j, :-1] * np.diag(iPsi.PsiStar, k=1) * atom.U[t.i, :-1])
+                            atom.Gamma[t.j, t.i, :-1, 2] += integrand * wlamu[:-1]
+                            atom.Gamma[t.i, t.i, :, 0] = -(uv.Vij * Ieff)
+
                             # NOTE(cmo): Compare equations (2.16) and (2.19) in [RH92] -- note how all non-dagger terms are of
                             # course gone from (2.19) since the new populations are evaluated when in the matrix solution, and
                             # the n_l\daggers in the _critical summations_ (the final terms on both sides of (2.16)) -- the
@@ -695,12 +723,12 @@ class Context:
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
         # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums 
         # of every other entry on their column in Gamma.
-        for atom in activeAtoms:
-            for k in range(Nspace):
-                np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
-                for i in range(atom.Nlevel):
-                    GamDiag = np.sum(atom.Gamma[:, i, k])
-                    atom.Gamma[i, i, k] = -GamDiag
+        # for atom in activeAtoms:
+        #     for k in range(Nspace):
+        #         np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
+        #         for i in range(atom.Nlevel):
+        #             GamDiag = np.sum(atom.Gamma[:, i, k])
+        #             atom.Gamma[i, i, k] = -GamDiag
 
         dJ = np.abs(1.0 - JDag / self.J)
         dJMax = dJ.max()
