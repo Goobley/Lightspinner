@@ -649,7 +649,6 @@ class Context:
                         # one active species, with possible overlapping
                         # transitions. To me, the expression in [U01] is
                         # clearer.
-                        Ieff = iPsi.I - iPsi.PsiStar * atom.eta
 
                         for kr, t in enumerate(atom.trans):
                             if not t.active[la]:
@@ -665,6 +664,7 @@ class Context:
                             wlamu = atom.wla[kr] * wmu * 4 * np.pi
 
                             uv = t.uv(la, mu, toFrom)
+                            Ieff = iPsi.I - iPsi.PsiStar * atom.n[t.j] * uv.Uji
 
                             # NOTE(cmo): Add the contributions to the Gamma matrix
                             # Follow (2.19) in [RH92] or (24) in [U01] -- we use the properties
@@ -674,10 +674,10 @@ class Context:
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
                             # extremely handy here, as they essentially serve as all of the
                             # bookkeeping for filling Gamma
-                            integrand = (uv.Uji + uv.Vji * Ieff) - (atom.chi[t.i] * iPsi.PsiStar * atom.U[t.j])
+                            integrand = (1.0 - atom.chi[t.i] * iPsi.PsiStar) * uv.Uji + uv.Vji * Ieff
                             atom.Gamma[t.i, t.j] += integrand * wlamu
 
-                            integrand = (uv.Vij * Ieff) - (atom.chi[t.j] * iPsi.PsiStar * atom.U[t.i])
+                            integrand = uv.Vij * Ieff
                             atom.Gamma[t.j, t.i] += integrand * wlamu
                             # NOTE(cmo): Compare equations (2.16) and (2.19) in [RH92] -- note how all non-dagger terms are of
                             # course gone from (2.19) since the new populations are evaluated when in the matrix solution, and
