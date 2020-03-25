@@ -326,9 +326,8 @@ class RadiativeSet:
                 continue
             a.replace_atomic_table(self.atomicTable)
 
-    def iterate_lte_ne_eq_pops(self, atmos: Atmosphere):
+    def iterate_lte_ne_eq_pops(self, atmos: Atmosphere, maxIter=3000):
         atmos.nondimensionalise()
-        maxIter = 500
         prevNe = np.copy(atmos.ne)
         ne = np.copy(atmos.ne)
         for it in range(maxIter):

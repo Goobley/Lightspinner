@@ -5,7 +5,7 @@ from scipy.linalg import solve
 from typing import Union, Optional, List
 from atomic_model import AtomicLine, AtomicContinuum, AtomicModel, VoigtLine
 from atmosphere import Atmosphere
-from atomic_set import SpectrumConfiguration, AtomicStateTable
+from atomic_set import SpectrumConfiguration, AtomicStateTable, lte_pops
 from atomic_table import AtomicTable
 from formal_solver import piecewise_linear_1d, IPsi
 import constants as Const
@@ -13,6 +13,7 @@ from background import Background
 from numba import njit
 from utils import voigt_H
 from typing import cast
+import warnings
 
 @dataclass
 class UV:
@@ -88,6 +89,8 @@ class ComputationalTransition:
     uv(self, la, mu, toFrom) -> UV
         Returns the U and V terms from [RH92]/[U01] for the transition at a
         given frequency, ray and direction index.
+    zero_rates(self)
+        Zeros radiative rates, Rij and Rji.
     """
 
     def __init__(self, trans: Union[AtomicLine, AtomicContinuum], compAtom: 'ComputationalAtom', atmos: Atmosphere, spect: SpectrumConfiguration):
@@ -115,6 +118,9 @@ class ComputationalTransition:
             self.lambda0 = trans.lambda0
         else:
             self.alpha = trans.alpha
+            self.sahaBoltzFactor = trans.iLevel.g / (2 * trans.jLevel.g) \
+                                    * (Const.HPlanck**2 / (2 * np.pi * Const.MElectron * Const.KBoltzmann * atmos.temperature))**1.5 \
+                                    * np.exp((trans.jLevel.E_SI - trans.iLevel.E_SI) / (Const.KBoltzmann * atmos.temperature))
 
         self.i = trans.i
         self.j = trans.j
@@ -287,6 +293,10 @@ class ComputationalTransition:
 
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
+    def zero_rates(self):
+        self.Rij.fill(0.0)
+        self.Rji.fill(0.0)
+
 class ComputationalAtom:
     """Stores the state of an atom and its transitions during iteration.
 
@@ -361,6 +371,8 @@ class ComputationalAtom:
     compute_collisions(self)
         Compute the collisional rates from the AtomicModel and Atmosphere,
         and store the results in their transposed form in C.
+    zero_rates(self)
+        Zero the radiative rates (Rij, Rji) of all transitions in this atom.
     """
 
     def __init__(self, atom: AtomicModel, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable):
@@ -429,11 +441,8 @@ class ComputationalAtom:
         """
 
         Nspace = self.atmos.Nspace
-        self.eta = np.zeros(Nspace)
         self.gij = np.zeros((self.Ntrans, Nspace))
         self.wla = np.zeros((self.Ntrans, Nspace))
-        self.U = np.zeros((self.Nlevel, Nspace))
-        self.chi = np.zeros((self.Nlevel, Nspace))
 
         hc_k = Const.HC / (Const.KBoltzmann * Const.NM_TO_M)
         for kr, t in enumerate(self.trans):
@@ -452,6 +461,8 @@ class ComputationalAtom:
             else:
                 self.gij[kr, :] = self.nStar[t.i] / self.nStar[t.j] \
                     * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
+                # self.gij[kr, :] = self.atmos.ne * t.sahaBoltzFactor \
+                #     * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
 
     def zero_angle_dependent_vars(self):
@@ -461,9 +472,7 @@ class ComputationalAtom:
         matrix (eta, U, and chi).
         """
 
-        self.eta.fill(0.0)
-        self.U.fill(0.0)
-        self.chi.fill(0.0)
+        pass
 
     def setup_Gamma(self):
         """Zero the Gamma matrix.
@@ -485,6 +494,10 @@ class ComputationalAtom:
         # NOTE(cmo): Some rates use spline interpolants that can, in odd cases,
         # go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
+
+    def zero_rates(self):
+        for t in self.trans:
+            t.zero_rates()
 
 
 class Context:
@@ -560,9 +573,10 @@ class Context:
             self.activeAtoms.append(ComputationalAtom(a, atmos, spect, eqPops))
 
         self.J = np.zeros((spect.wavelength.shape[0], atmos.Nspace))
+        self.Jnew = np.zeros((spect.wavelength.shape[0], atmos.Nspace))
         self.I = np.zeros((spect.wavelength.shape[0], atmos.Nrays))
 
-    def formal_sol_gamma_matrices(self):
+    def formal_sol_gamma_matrices(self, fixCol=False):
         """Perform the formal solution over all specified wavelengths and angles
         and fill in the Gamma matrix.
 
@@ -583,14 +597,16 @@ class Context:
         background = self.background
 
         activeAtoms = self.activeAtoms
+        for a in activeAtoms:
+            a.zero_rates()
 
-        for atom in activeAtoms:
-            atom.setup_Gamma()
-            atom.compute_collisions()
-            atom.Gamma += atom.C
+        if not fixCol:
+            for atom in activeAtoms:
+                atom.setup_Gamma()
+                atom.compute_collisions()
+                atom.Gamma += atom.C
 
-        JDag = np.copy(self.J)
-        self.J.fill(0.0)
+        self.Jnew.fill(0.0)
 
         for la, wav in enumerate(self.spect.wavelength):
             for atom in activeAtoms:
@@ -602,7 +618,6 @@ class Context:
                     etaTot = np.zeros(Nspace)
 
                     for atom in activeAtoms:
-                        atom.zero_angle_dependent_vars()
                         for t in atom.trans:
                             if not t.active[la]:
                                 continue
@@ -613,23 +628,15 @@ class Context:
                             chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
                             eta = atom.n[t.j] * uv.Uji
 
-                            # NOTE(cmo): Add the opacity to the lower level
-                            # Subtract the opacity from the upper level (stimulated emission)
-                            # The atom.chi matrix is then simply the total "effective opacity" for each atomic level
-                            atom.chi[t.i] += chi
-                            atom.chi[t.j] -= chi
-                            # NOTE(cmo): Accumulate U, this is like the chi matrix
-                            atom.U[t.j] += uv.Uji
                             # NOTE(cmo): Accumulate onto total opacity and emissivity 
                             # as well as total emissivity in the atom -- needed for Ieff
                             chiTot += chi
                             etaTot += eta
-                            atom.eta += eta
 
                     # NOTE(cmo): Accumulate background opacity
                     chiTot += background.chi[la]
                     # NOTE(cmo): Compute source function
-                    S = (etaTot + background.eta[la] + background.sca[la] * JDag[la]) / chiTot
+                    S = (etaTot + background.eta[la] + background.sca[la] * self.J[la]) / chiTot
 
                     # NOTE(cmo): Compute formal solution and approximate operator PsiStar
                     iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
@@ -637,18 +644,10 @@ class Context:
                     # but the outgoing rays happen after so we can simply save it every subiteration
                     self.I[la, mu] = iPsi.I[0]
                     # NOTE(cmo): Add contribution to local mean intensity field Jbar
-                    self.J[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+                    self.Jnew[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
 
                     # NOTE(cmo): Construct Gamma matrix for each atom
                     for atom in self.activeAtoms:
-                        # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using 
-                        # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply 
-                        # the sum of \eta in the currently active transitions in an atom.
-                        # I find (2.20) of RH92 a little confusing here, as I
-                        # believe they are working on the assumption of only
-                        # one active species, with possible overlapping
-                        # transitions. To me, the expression in [U01] is
-                        # clearer.
 
                         for kr, t in enumerate(atom.trans):
                             if not t.active[la]:
@@ -664,32 +663,28 @@ class Context:
                             wlamu = atom.wla[kr] * wmu * 4 * np.pi
 
                             uv = t.uv(la, mu, toFrom)
-                            Ieff = iPsi.I - iPsi.PsiStar * atom.n[t.j] * uv.Uji
+                            # NOTE(cmo): Compute Ieff as per (2.25) in [RH92],
+                            # this is different for each transition in the
+                            # "same-transition" preconditioning approach.
+                            Ieff = iPsi.I - iPsi.PsiStar * (atom.n[t.j] * uv.Uji)
 
-                            # NOTE(cmo): Add the contributions to the Gamma matrix
-                            # Follow (2.19) in [RH92] or (24) in [U01] -- we use the properties
-                            # of the Gamma matrix to construct the off-diagonal components later 
-                            # and can therefore ignore all terms with a Kronecker delta.
+                            # NOTE(cmo): Add the contributions to the Gamma
+                            # matrix We use the properties of the Gamma matrix
+                            # to construct the off-diagonal components later
+                            # and can therefore ignore all terms with a
+                            # Kronecker delta.
 
-                            # NOTE(cmo): The accumulated chi and U matrices per atom are
-                            # extremely handy here, as they essentially serve as all of the
-                            # bookkeeping for filling Gamma
-                            integrand = (1.0 - atom.chi[t.i] * iPsi.PsiStar) * uv.Uji + uv.Vji * Ieff
+                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                            integrand = (1.0 - chi * iPsi.PsiStar) * uv.Uji + uv.Vji * Ieff
                             atom.Gamma[t.i, t.j] += integrand * wlamu
 
                             integrand = uv.Vij * Ieff
                             atom.Gamma[t.j, t.i] += integrand * wlamu
-                            # NOTE(cmo): Compare equations (2.16) and (2.19) in [RH92] -- note how all non-dagger terms are of
-                            # course gone from (2.19) since the new populations are evaluated when in the matrix solution, and
-                            # the n_l\daggers in the _critical summations_ (the final terms on both sides of (2.16)) -- the
-                            # populations we preserve from the previous iteration are already wrapped up in the atom.chi
-                            # term, and all other terms will be multiplied by their associated new populations when we do
-                            # \Gamma \cdot \vec{n} = \vec{0} i.e. statistical equilbirum.
 
                             # NOTE(cmo): Radiative rates component for this angle and frequency
                             # as per (28) of [U01] or (2.8) or [RH92]
                             t.Rij += iPsi.I * uv.Vij * wlamu
-                            t.Rji += (uv.Uji + iPsi.I * uv.Vij) * wlamu
+                            t.Rji += (uv.Uji + iPsi.I * uv.Vji) * wlamu
 
         # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
@@ -702,10 +697,13 @@ class Context:
                     GamDiag = np.sum(atom.Gamma[:, i, k])
                     atom.Gamma[i, i, k] = -GamDiag
 
-        dJ = np.abs(1.0 - JDag / self.J)
+        dJ = np.abs(1.0 - self.J / self.Jnew)
         dJMax = dJ.max()
 
         return dJMax
+
+    def update_J(self):
+        self.J[:] = self.Jnew
 
     def stat_equil(self):
         """Update the populations of all active species towards statistical
@@ -743,3 +741,405 @@ class Context:
                 atom.n[:, k] = nNew
 
         return maxRelChange
+
+    # def F(self, k):
+    #     atom = self.activeAtoms[0]
+    #     nLevel = atom.Nlevel
+    #     nEqn = nLevel + 1
+
+    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
+    #     F = np.zeros(nEqn)
+    #     F[:atom.Nlevel] = (atom.Gamma[:, :, k] @ atom.n[:, k])
+    #     # F[atom.Nlevel] = np.sum(stages * atom.n[:, k]) - self.atmos.ne[k]
+    #     F[-1] = 1.0 - atom.n[-1, k] / self.atmos.ne[k]
+    #     for atom in self.activeAtoms[1:]:
+    #         stages = np.array([l.stage for l in atom.atomicModel.levels])
+    #         F[-1] -= np.sum(stages * atom.n[:, k] / self.atmos.ne[k])
+    #     return F
+
+
+    # def check_jac(self, k, pertSize=1e-4, fixCol=True):
+    #     atom = self.activeAtoms[0]
+    #     nLevel = atom.Nlevel
+    #     nEqn = nLevel + 1
+
+    #     count = 0
+    #     delta = 1.0
+    #     dF = np.zeros((nEqn, nEqn))
+
+    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
+
+    #     # Gamma_ne = atom.Gamma[:, :, k] - atom.C[:, :, k]
+    #     # np.fill_diagonal(Gamma_ne, 0.0)
+    #     # for i in range(nLevel):
+    #     #     GamDiag = np.sum(Gamma_ne[:, i])
+    #     #     Gamma_ne[i, i] = -GamDiag
+    #     # for t in atom.trans:
+    #     #     if not t.isLine:
+    #     #         Gamma_ne[t.i, t.j] /= self.atmos.ne[k]
+
+    #     ctx.formal_sol_gamma_matrices()
+
+    #     F0 = self.F(k)
+
+    #     dF[:nLevel, :nLevel] = -atom.Gamma[:, :, k]
+    #     # for n in range(nLevel):
+    #     #     dF[n, n] = -atom.Gamma[n, n, k]
+
+    #     # dF[:nLevel, nLevel] = -Gamma_ne[:, nLevel-1] * atom.n[-1, k]
+    #     # dF[:nLevel, nLevel] = -Gamma_ne @ atom.n[:, k]
+    #     for t in atom.trans:
+    #         if not t.isLine:
+    #             # dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k] * atom.n[t.j, k] + atom.C[t.i, t.j, k])
+    #             dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k] * atom.n[t.j, k])
+    #     dF[nLevel-1, nLevel] = -np.sum(dF[:nLevel-1, nLevel])
+
+    #     dF[nLevel, :nLevel] = -stages
+    #     dF[nLevel, nLevel] = 1.0
+
+    #     Gamma0 = np.copy(atom.Gamma[:, :, k])
+
+    #     dFNum = np.zeros_like(dF)
+    #     for n in range(nLevel):
+    #         pert = atom.n[n, k] * pertSize
+    #         atom.n[n, k] += pert
+    #         Fn = self.F(k)
+    #         # self.formal_sol_gamma_matrices()
+    #         atom.n[n, k] -= pert
+    #         # dFNum[:, n] = (atom.Gamma[:, n, k] - Gamma0) / pert
+    #         dFNum[:, n] = (Fn - F0) / pert
+
+    #     pert = self.atmos.ne[k] * pertSize
+    #     self.atmos.ne[k] += pert
+    #     self.formal_sol_gamma_matrices(fixCol=fixCol)
+    #     Fn = self.F(k)
+    #     self.atmos.ne[k] -= pert
+    #     # dFNum[:nLevel, nLevel] = (atom.Gamma[:, n, k] - Gamma0) / pert
+    #     dFNum[:, nLevel] = (Fn - F0) / pert
+
+    #     return dF, dFNum
+
+
+    # # def heinzel_post_update(self):
+    # #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
+    # #     atom = self.activeAtoms[0]
+    # #     nLevel = atom.Nlevel
+    # #     # for atom in self.activeAtoms:
+    # #     #     nLevel += atom.Nlevel
+
+    # #     nEqn = nLevel + 1
+    # #     Nspace = self.atmos.Nspace
+    # #     stages = np.array([l.stage for l in atom.atomicModel.levels])
+    # #     maxChange = 0.0
+
+    # #     for k in range(Nspace):
+    # #         count = 0
+    # #         delta = 1.0
+    # #         ndag = np.copy(atom.n)
+    # #         F = np.zeros(nEqn)
+    # #         dF = np.zeros((nEqn, nEqn))
+    # #         prev = np.copy(atom.n[:, k])
+
+    # #         Gamma_ne = atom.Gamma[:, :, k] - atom.C[:, :, k]
+    # #         np.fill_diagonal(Gamma_ne, 0.0)
+    # #         for i in range(nLevel):
+    # #             GamDiag = np.sum(Gamma_ne[:, i])
+    # #             Gamma_ne[i, i] = -GamDiag
+    # #         for t in atom.trans:
+    # #             if not t.isLine:
+    # #                 Gamma_ne[t.i, t.j] /= self.atmos.ne[k]
+
+    # #         F[:atom.Nlevel] = (atom.Gamma[:, :, k] @ ndag[:, k])
+    # #         F[atom.Nlevel] = np.sum(stages * ndag[:, k]) - self.atmos.ne[k]
+
+    # #         # dF[:nLevel, :nLevel] = -atom.Gamma[:, :, k]
+    # #         for n in range(nLevel):
+    # #             dF[n, n] = -atom.Gamma[n, n, k]
+    # #         dF[:nLevel, nLevel] = -Gamma_ne[:, nLevel-1] * ndag[-1, k]
+    # #         dF[nLevel, :nLevel] = -stages
+    # #         dF[nLevel, nLevel] = 1.0
+
+    # #         maxVar = np.argmax(ndag[:, k])
+    # #         # dF[maxVar, :nLevel] = 1.0 / atom.nTotal[k]
+    # #         # dF[maxVar, nLevel] = 0.0
+    # #         # F[maxVar] = -1.0
+    # #         # F[maxVar] += np.sum(atom.n[:, k] / atom.nTotal[k])
+    # #         dF[maxVar, :nLevel] = 1.0
+    # #         dF[maxVar, nLevel] = 0.0
+    # #         F[maxVar] = (atom.nTotal[k] - np.sum(ndag[:, k]))
+
+    # #         update = solve(dF, F)
+    # #         print('------ %d ------' % k)
+    # #         print(F)
+    # #         print(dF)
+    # #         print(update)
+    # #         print(atom.n[:, k], self.atmos.ne[k])
+    # #         print('------------')
+    # #         atom.n[:, k] += update[:nLevel]
+    # #         delta = np.max(np.abs(1.0 - ndag[:, k] / atom.n[:, k]))
+    # #         maxChange = max(delta, maxChange)
+    # #         print(delta)
+    # #         print(count)
+    # #         self.atmos.ne[k] += update[-1]
+
+    # #     return maxChange
+
+
+    # def paletou_post_update(self):
+    #     warnings.simplefilter('ignore')
+    #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
+    #     atom = self.activeAtoms[0]
+    #     nLevel = atom.Nlevel
+    #     # for atom in self.activeAtoms:
+    #     #     nLevel += atom.Nlevel
+
+    #     nEqn = nLevel + 1
+    #     Nspace = self.atmos.Nspace
+    #     self.atmos.ne[:] = 0.0
+    #     for a in self.activeAtoms:
+    #         stages = np.array([l.stage for l in a.atomicModel.levels])
+    #         self.atmos.ne[:] += np.sum(stages[:, None] * a.n, axis=0)
+    #     # for p in self.eqPops:
+    #     #     p.nStar[:] = lte_pops(p.model, self.atmos, p.nTotal)
+    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
+    #     maxChange = 0.0
+
+    #     # self.atmos.ne[:] = atom.n[-1, :]
+
+    #     ndag = np.copy(atom.n)
+    #     Cprev = np.copy(atom.C)
+    #     neStart = np.copy(self.atmos.ne)
+        
+    #     pertSize = 1e-3
+    #     pert = neStart * pertSize
+    #     self.atmos.ne += pert
+    #     atom.compute_collisions()
+    #     self.atmos.ne[:] = neStart
+    #     dC = (atom.C - Cprev) / pert
+    #     atom.C[:] = Cprev
+
+    #     for k in range(Nspace):
+    #         for it in range(1000):
+    #             delta = 1.0
+
+    #             dF = np.zeros((nEqn, nEqn))
+    #             Fg = self.F(k)
+
+    #             dF[:nLevel, :nLevel] = atom.Gamma[:, :, k]
+    #             for t in atom.trans:
+    #                 if not t.isLine:
+    #                     dF[t.i, nLevel] = (t.Rji[k] / self.atmos.ne[k] + dC[t.i, t.j, k]) * atom.n[t.j, k]
+    #             dF[nLevel-1, nLevel] = -np.sum(dF[:nLevel-1, nLevel])
+
+    #             dF[nLevel, :nLevel] = -stages
+    #             dF[nLevel, nLevel] = 1.0
+
+    #             nTot = np.sum(atom.n[:, k])
+    #             maxLevel = np.argmax(atom.n[:, k])
+    #             Fg[maxLevel] = 1.0
+    #             Fg[maxLevel] -= np.sum(atom.n[:, k] / nTot)
+
+    #             dF[maxLevel, -1] = 0.0
+    #             dF[maxLevel, :nLevel] = -1.0 / nTot
+
+    #             Fg *= -1.0
+    #             for ii in range(nLevel):
+    #                 dF[ii, :] *= atom.n[ii, k]
+    #             dF[-1, :] *= self.atmos.ne[k]
+
+    #             # for n in range(nLevel):
+    #             #     dF[:nLevel, n] /= atom.n[n, k]
+    #             # dF[:nLevel, nLevel] /= self.atmos.ne[k]
+
+    #             # sol = np.zeros(nEqn)
+    #             # sol[:nLevel] = atom.n[:, k]
+    #             # sol[-1] = self.atmos.ne[k]
+
+    #             # F = dF @ 
+
+    #             # maxIdx = np.argmax()
+
+    #             # F[:nLevel] /= atom.n[:, k]
+    #             # F[nLevel] /= self.atmos.ne[k]
+
+    #             update = solve(dF, Fg)
+    #             if k == 60:
+    #                 print('------ %d ------' % k)
+    #                 print(Fg)
+    #                 print(dF)
+    #                 print(update)
+    #                 print(atom.n[:, k], self.atmos.ne[k])
+    #                 print('------------')
+    #             atom.n[:, k] *= (1.0 + update[:nLevel])
+    #             self.atmos.ne[k] *= (1.0 + update[-1])
+    #             maxItChange = np.max(np.abs(update))
+    #             maxChange = max(maxItChange, maxChange)
+    #             if maxItChange < 1e-5:
+    #                 if it > 2:
+    #                     print('%d: %d iter' % (k, it))
+    #                 break
+
+    #     return maxChange
+
+
+    # # def heinzel_post_update(self):
+    # #     warnings.simplefilter('ignore')
+    # #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
+    # #     atom = self.activeAtoms[0]
+    # #     nLevel = atom.Nlevel
+    # #     # for atom in self.activeAtoms:
+    # #     #     nLevel += atom.Nlevel
+
+    # #     nEqn = nLevel + 1
+    # #     Nspace = self.atmos.Nspace
+    # #     stages = np.array([l.stage for l in atom.atomicModel.levels])
+    # #     # maxChange = 0.0
+    # #     maxChange = np.zeros(Nspace)
+
+    # #     ndag = np.copy(atom.n)
+
+    # #     # k = 60
+    # #     for k in range(Nspace):
+
+    # #         GammaRad = atom.Gamma[:, :, k] - atom.C[:, :, k]
+    # #         np.fill_diagonal(GammaRad, 0.0)
+    # #         for i in range(nLevel):
+    # #             GamDiag = np.sum(GammaRad[:, i])
+    # #             GammaRad[i, i] = -GamDiag
+    # #         C = np.copy(atom.C[:, :, k])
+
+    # #         delta = 1.0
+
+    # #         var = np.zeros(nEqn)
+    # #         var[:nLevel] = atom.n[:, k]
+    # #         var[-1] = self.atmos.ne[k]
+
+    # #         GammaTot = np.copy(atom.Gamma[:, :, k])
+    # #         # F = np.zeros(nEqn)
+    # #         dFF = np.zeros((nEqn, nEqn))
+    # #         dFF[:nLevel, :nLevel] = GammaTot
+    # #         # F = GammaTot @ atom.n[:, k]
+    # #         F = self.F(k)
+
+    # #         # dFF[-1, -2] = -1.0 / var[-1]
+    # #         # dFF[-1, -1] = var[-2] / var[-1]**2
+    # #         dFF[-1, -2] = -1.0 / var[-2]
+    # #         dFF[-1, -1] = 1.0 / var[-1]
+
+    # #         # np.fill_diagonal(GammaRad, 0.0)
+
+    # #         # for ii in range(nLevel):
+    # #         #     if ii == nLevel - 1:
+    # #         #         s = np.sum(GammaRad[:, -1]) / var[-1]
+    # #         #         s0 = np.sum(C[:, -1]) / var[-1]
+
+    # #         #         dFF[-2, -1] = var[-2] * (s + 2 * s0)
+    # #         #         dFF[-2, -1] -= np.sum(var[:nLevel] / var[-1] * C[-1, :nLevel])
+    # #         #     else:
+    # #         #         s = np.sum(GammaRad[:, ii]) / var[-1]
+    # #         #         dFF[ii, -1] = var[ii] * s
+    # #         #         dFF[ii, -1] -= np.sum(var[:nLevel-1] * C[ii, :nLevel-1] / var[-1])
+    # #         #         dFF[ii, -1] += var[ii] / var[-1] * C[-1, ii] - var[-2] / var[-1] * (GammaRad[ii, -1] + 2.0 * C[ii, -1])
+
+    # #         nTot = np.sum(atom.n[:, k])
+    # #         maxLevel = np.argmax(atom.n[:, k])
+    # #         F[maxLevel] = 1.0
+    # #         F[maxLevel] -= np.sum(var[:nLevel] / nTot)
+
+    # #         dFF[maxLevel, -1] = 0.0
+    # #         dFF[maxLevel, :nLevel] = -1.0 / nTot
+
+    # #         F *= -1.0
+    # #         for ii in range(nEqn):
+    # #             dFF[ii, :] *= var
+
+    # #         update = solve(dFF, F)
+    # #         if k == 60:
+    # #             print('------ %d ------' % k)
+    # #             print(F)
+    # #             # print(Fg)
+    # #             print(dFF)
+    # #             print(update)
+    # #             print(atom.n[:, k], self.atmos.ne[k])
+    # #             print('------------')
+    # #         atom.n[:, k] *= (1.0 + update[:nLevel])
+    # #         self.atmos.ne[k] *= (1.0 + update[-1])
+    # #         # maxChange = max(maxChange, np.max(np.abs(update)))
+    # #         maxChange[k] = np.max(np.abs(update))
+    # #         # delta = np.max(np.abs(1.0 - ndag[:, k] / atom.n[:, k]))
+    # #         # maxChange = max(delta, maxChange)
+    # #         # self.atmos.ne[k] *= update[-1]
+
+    # #     return maxChange
+
+    def F(self):
+        Nspace = self.atmos.Nspace
+        Nrays = self.atmos.Nrays
+        Nspect = self.spect.wavelength.shape[0]
+        background = self.background
+
+        activeAtoms = self.activeAtoms
+        for a in activeAtoms:
+            a.zero_rates()
+
+        if not fixCol:
+            for atom in activeAtoms:
+                atom.setup_Gamma()
+                atom.compute_collisions()
+                atom.Gamma += atom.C
+
+        self.Jnew.fill(0.0)
+
+        for la, wav in enumerate(self.spect.wavelength):
+            for atom in activeAtoms:
+                atom.setup_wavelength(la)
+
+            for mu in range(Nrays):
+                for toFrom, sign in enumerate([-1.0, 1.0]):
+                    chiTot = np.zeros(Nspace)
+                    etaTot = np.zeros(Nspace)
+
+                    for atom in activeAtoms:
+                        for t in atom.trans:
+                            if not t.active[la]:
+                                continue
+
+                            uv = t.uv(la, mu, toFrom)
+                            # NOTE(cmo): Compute opacity and emissivity in transition t
+                            # Equation (1) in [U01]
+                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                            eta = atom.n[t.j] * uv.Uji
+
+                            # NOTE(cmo): Accumulate onto total opacity and emissivity 
+                            # as well as total emissivity in the atom -- needed for Ieff
+                            chiTot += chi
+                            etaTot += eta
+
+                    # NOTE(cmo): Accumulate background opacity
+                    chiTot += background.chi[la]
+                    # NOTE(cmo): Compute source function
+                    S = (etaTot + background.eta[la] + background.sca[la] * self.J[la]) / chiTot
+
+                    # NOTE(cmo): Compute formal solution and approximate operator PsiStar
+                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
+                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
+                    # but the outgoing rays happen after so we can simply save it every subiteration
+                    self.I[la, mu] = iPsi.I[0]
+                    # NOTE(cmo): Add contribution to local mean intensity field Jbar
+                    self.Jnew[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+
+
+    def fdjac(self):
+        Nspace = self.atmos.Nspace
+        for k in range(Nspace):
+
+    # def broyden_solve(self):
+
+
+
+
+
+            
+            
+
+
