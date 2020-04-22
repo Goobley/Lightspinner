@@ -10,15 +10,17 @@ atmosConst.quadrature(5)
 atmos = atmosConst.convert_scales()
 
 aSet = RadiativeSet([CaII_atom(), H_6_atom()])
-aSet.set_active('Ca')
+aSet.set_active('H', 'Ca')
 spect = aSet.compute_wavelength_grid()
-eqPops = aSet.compute_eq_pops(atmos)
+# eqPops = aSet.compute_eq_pops(atmos)
+eqPops = aSet.iterate_lte_ne_eq_pops(atmos)
 
 background = Background(atmos, spect)
 ctx = Context(atmos, spect, eqPops, background)
 
 dJ = 1.0
 dPops = 1.0
+dPopsNr = 1.0
 i = 0
 while dJ > 2e-3 or dPops > 1e-3:
     i += 1
@@ -26,7 +28,8 @@ while dJ > 2e-3 or dPops > 1e-3:
 
     if i > 3:
         dPops = ctx.stat_equil()
-    print('Iteration %.3d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
+        dPopsNr = ctx.nr_post_update()
+    print('Iteration %.3d: dJ: %.2e, dPops: %s (%.2e)' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops, dPopsNr))
 
 plt.plot(spect.wavelength, ctx.I[:, -1])
 plt.show()

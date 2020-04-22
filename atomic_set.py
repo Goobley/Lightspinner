@@ -328,7 +328,7 @@ class RadiativeSet:
 
     def iterate_lte_ne_eq_pops(self, atmos: Atmosphere):
         atmos.nondimensionalise()
-        maxIter = 500
+        maxIter = 3000
         prevNe = np.copy(atmos.ne)
         ne = np.copy(atmos.ne)
         for it in range(maxIter):

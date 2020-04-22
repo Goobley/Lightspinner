@@ -5,7 +5,7 @@ from scipy.linalg import solve
 from typing import Union, Optional, List
 from atomic_model import AtomicLine, AtomicContinuum, AtomicModel, VoigtLine
 from atmosphere import Atmosphere
-from atomic_set import SpectrumConfiguration, AtomicStateTable
+from atomic_set import SpectrumConfiguration, AtomicStateTable, lte_pops
 from atomic_table import AtomicTable
 from formal_solver import piecewise_linear_1d, IPsi
 import constants as Const
@@ -743,3 +743,106 @@ class Context:
                 atom.n[:, k] = nNew
 
         return maxRelChange
+
+    def F(self, k):
+        Nlevel = 0
+        for atom in self.activeAtoms:
+            Nlevel += atom.Nlevel
+        Neqn = Nlevel + 1
+
+        stages = [np.array([l.stage for l in atom.atomicModel.levels]) for atom in self.activeAtoms]
+        F = np.zeros(Neqn)
+        F[-1] = self.atmos.ne[k]
+        start = 0
+        for idx, atom in enumerate(self.activeAtoms):
+            F[start:start+atom.Nlevel] = -(atom.Gamma[:, :, k] @ atom.n[:, k])
+            F[start + atom.Nlevel - 1] = np.sum(atom.n[:, k]) - atom.nTotal[k]
+
+            F[-1] -= stages[idx] @ atom.n[:, k]
+            start += atom.Nlevel
+        return F
+
+
+    def nr_post_update(self):
+        # warnings.simplefilter('ignore')
+        # assert self.activeAtoms[0].atomicModel.name.startswith('H')
+        # atom = self.activeAtoms[0]
+        Nlevel = 0
+        for atom in self.activeAtoms:
+            Nlevel += atom.Nlevel
+        Neqn = Nlevel + 1
+
+        Nspace = self.atmos.Nspace
+        stages = [np.array([l.stage for l in atom.atomicModel.levels]) for atom in self.activeAtoms]
+        maxChange = 0.0
+
+        neStart = np.copy(self.atmos.ne)
+
+        dC = []
+        for atom in self.activeAtoms:
+            atom.compute_collisions()
+            Cprev = np.copy(atom.C)
+            pertSize = 1e-2
+            pert = neStart * pertSize
+            self.atmos.ne += pert
+            nStarPrev = np.copy(atom.nStar)
+            atom.nStar[:] = lte_pops(atom.atomicModel, self.atmos, atom.nTotal)
+            atom.compute_collisions()
+            self.atmos.ne[:] = neStart
+            atom.nStar[:] = nStarPrev
+            dC.append((atom.C - Cprev) / pert)
+            atom.C[:] = Cprev
+
+        print(dC[0][:,:,40])
+        print(dC[0].max())
+        # print(np.sum(dC[0][:,:,40]@self.activeAtoms[0].n[:, 40]))
+        print(self.activeAtoms[0].C[:,:,40])
+
+        for k in range(Nspace):
+                delta = 1.0
+
+                dF = np.zeros((Neqn, Neqn))
+                Fg = self.F(k)
+
+                start = 0
+                for idx, atom in enumerate(self.activeAtoms):
+                    dF[start:start+atom.Nlevel, start:start+atom.Nlevel] = -atom.Gamma[:, :, k]
+                    for t in atom.trans:
+                        if not t.isLine:
+                            dF[start+t.i, Neqn-1] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k] 
+                    for i in range(atom.Nlevel):
+                        dF[start+i, Neqn-1] -= dC[idx][i, :, k] @ atom.n[:, k]
+                    dF[start+atom.Nlevel-1, :] = 0.0
+                    dF[start+atom.Nlevel-1, start:start+atom.Nlevel] = 1.0
+
+                    dF[-1, start:start+atom.Nlevel] = -stages[idx]
+                    start += atom.Nlevel
+
+                dF[-1, -1] = 1.0
+
+                Fg *= -1.0
+                update = solve(dF, Fg)
+                if k == 15:
+                    print('------ %d ------' % k)
+                    print(Fg)
+                    print(dF)
+                    print(update)
+                    # print(atom.n[:, k], self.atmos.ne[k])
+                    print(dF @ update)
+                    print('------------')
+                    # raise ValueError
+                start = 0
+                for atom in self.activeAtoms:
+                    atom.n[:, k] += update[start:start+atom.Nlevel]
+                    start += atom.Nlevel
+                self.atmos.ne[k] += update[-1]
+                pops = np.zeros(Neqn)
+                start = 0
+                for atom in self.activeAtoms:
+                    pops[start:start+atom.Nlevel] = atom.n[:, k]
+                    start += atom.Nlevel
+                pops[-1] = self.atmos.ne[k]
+                maxItChange = np.max(np.abs(update/pops))
+                maxChange = max(maxItChange, maxChange)
+
+        return maxChange
