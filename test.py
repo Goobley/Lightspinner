@@ -1,6 +1,6 @@
 from fal import Falc82
 from rh_atoms import CaII_atom, H_6_atom
-from atomic_set import RadiativeSet
+from atomic_set import RadiativeSet, lte_pops
 from rh_method import Context
 from background import Background
 import matplotlib.pyplot as plt
@@ -29,6 +29,9 @@ while dJ > 2e-3 or dPops > 1e-3:
     if i > 3:
         dPops = ctx.stat_equil()
         dPopsNr = ctx.nr_post_update()
+        for p in eqPops:
+            p.nStar[:] = lte_pops(p.model, atmos, p.nTotal)
+
     print('Iteration %.3d: dJ: %.2e, dPops: %s (%.2e)' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops, dPopsNr))
 
 plt.plot(spect.wavelength, ctx.I[:, -1])

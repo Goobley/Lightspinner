@@ -287,6 +287,10 @@ class ComputationalTransition:
 
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
+    def zero_rates(self):
+        self.Rij.fill(0.0)
+        self.Rji.fill(0.0)
+
 class ComputationalAtom:
     """Stores the state of an atom and its transitions during iteration.
 
@@ -465,13 +469,17 @@ class ComputationalAtom:
         self.U.fill(0.0)
         self.chi.fill(0.0)
 
+    def zero_rates(self):
+        for t in self.trans:
+            t.zero_rates()
+
     def setup_Gamma(self):
         """Zero the Gamma matrix.
         """
 
         self.Gamma.fill(0.0)
 
-    def compute_collisions(self):
+    def compute_collisions(self, fillDiagonal=False):
         """Compute the collisional rates from the AtomicModel and Atmosphere,
         and store the results in their transposed form in C.
         """
@@ -485,6 +493,13 @@ class ComputationalAtom:
         # NOTE(cmo): Some rates use spline interpolants that can, in odd cases,
         # go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
+
+        if fillDiagonal:
+            for k in range(self.atmos.Nspace):
+                np.fill_diagonal(self.C[:, :, k], 0.0)
+                for i in range(self.Nlevel):
+                    CDiag = np.sum(self.C[:, i, k])
+                    self.C[i, i, k] = -CDiag
 
 
 class Context:
@@ -561,6 +576,133 @@ class Context:
 
         self.J = np.zeros((spect.wavelength.shape[0], atmos.Nspace))
         self.I = np.zeros((spect.wavelength.shape[0], atmos.Nrays))
+
+    def formal_sol_gamma_matrices_same(self, fixCol=False):
+        """Perform the formal solution over all specified wavelengths and angles
+        and fill in the Gamma matrix.
+
+        This function applies the method of [RH92] and [U01] to construct the
+        Gamma matrix for the given, possibly overlapping, transitions on the
+        given common wavelength grid, with specified angle quadrature for a
+        plane-parallel atmosphere.
+
+        Returns
+        -------
+        dJ : float
+            The maximum relative update of the local angle-averaged intensity J
+        """
+
+        Nspace = self.atmos.Nspace
+        Nrays = self.atmos.Nrays
+        Nspect = self.spect.wavelength.shape[0]
+        background = self.background
+
+        activeAtoms = self.activeAtoms
+        for a in activeAtoms:
+            a.zero_rates()
+
+        if not fixCol:
+            for atom in activeAtoms:
+                atom.setup_Gamma()
+                atom.compute_collisions()
+                atom.Gamma += atom.C
+
+        Jdag = np.copy(self.J)
+        self.J.fill(0.0)
+
+        for la, wav in enumerate(self.spect.wavelength):
+            for atom in activeAtoms:
+                atom.setup_wavelength(la)
+
+            for mu in range(Nrays):
+                for toFrom, sign in enumerate([-1.0, 1.0]):
+                    chiTot = np.zeros(Nspace)
+                    etaTot = np.zeros(Nspace)
+
+                    for atom in activeAtoms:
+                        for t in atom.trans:
+                            if not t.active[la]:
+                                continue
+
+                            uv = t.uv(la, mu, toFrom)
+                            # NOTE(cmo): Compute opacity and emissivity in transition t
+                            # Equation (1) in [U01]
+                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                            eta = atom.n[t.j] * uv.Uji
+
+                            # NOTE(cmo): Accumulate onto total opacity and emissivity 
+                            # as well as total emissivity in the atom -- needed for Ieff
+                            chiTot += chi
+                            etaTot += eta
+
+                    # NOTE(cmo): Accumulate background opacity
+                    chiTot += background.chi[la]
+                    # NOTE(cmo): Compute source function
+                    S = (etaTot + background.eta[la] + background.sca[la] * self.J[la]) / chiTot
+
+                    # NOTE(cmo): Compute formal solution and approximate operator PsiStar
+                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
+                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
+                    # but the outgoing rays happen after so we can simply save it every subiteration
+                    self.I[la, mu] = iPsi.I[0]
+                    # NOTE(cmo): Add contribution to local mean intensity field Jbar
+                    self.J[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+
+                    # NOTE(cmo): Construct Gamma matrix for each atom
+                    for atom in self.activeAtoms:
+
+                        for kr, t in enumerate(atom.trans):
+                            if not t.active[la]:
+                                continue
+
+                            # NOTE(cmo): wlamu is the product of angle and
+                            # wavelength integration weights (*0.5 for up/down
+                            # component)
+                            wmu = 0.5 * self.atmos.wmu[mu]
+                            # NOTE(cmo): The 4pi term here represents the
+                            # factor for integrating over all solid angles,
+                            # rather than simply averaging.
+                            wlamu = atom.wla[kr] * wmu * 4 * np.pi
+
+                            uv = t.uv(la, mu, toFrom)
+                            # NOTE(cmo): Compute Ieff as per (2.25) in [RH92],
+                            # this is different for each transition in the
+                            # "same-transition" preconditioning approach.
+                            Ieff = iPsi.I - iPsi.PsiStar * (atom.n[t.j] * uv.Uji)
+
+                            # NOTE(cmo): Add the contributions to the Gamma
+                            # matrix We use the properties of the Gamma matrix
+                            # to construct the off-diagonal components later
+                            # and can therefore ignore all terms with a
+                            # Kronecker delta.
+
+                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                            integrand = (1.0 - chi * iPsi.PsiStar) * uv.Uji + uv.Vji * Ieff
+                            atom.Gamma[t.i, t.j] += integrand * wlamu
+
+                            integrand = uv.Vij * Ieff
+                            atom.Gamma[t.j, t.i] += integrand * wlamu
+
+                            # NOTE(cmo): Radiative rates component for this angle and frequency
+                            # as per (28) of [U01] or (2.8) or [RH92]
+                            t.Rij += iPsi.I * uv.Vij * wlamu
+                            t.Rji += (uv.Uji + iPsi.I * uv.Vji) * wlamu
+
+        # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
+        # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
+        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums 
+        # of every other entry on their column in Gamma.
+        for atom in activeAtoms:
+            for k in range(Nspace):
+                np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
+                for i in range(atom.Nlevel):
+                    GamDiag = np.sum(atom.Gamma[:, i, k])
+                    atom.Gamma[i, i, k] = -GamDiag
+
+        dJ = np.abs(1.0 - Jdag / self.J)
+        dJMax = dJ.max()
+
+        return dJMax
 
     def formal_sol_gamma_matrices(self):
         """Perform the formal solution over all specified wavelengths and angles
@@ -780,14 +922,14 @@ class Context:
 
         dC = []
         for atom in self.activeAtoms:
-            atom.compute_collisions()
+            atom.compute_collisions(fillDiagonal=True)
             Cprev = np.copy(atom.C)
             pertSize = 1e-2
             pert = neStart * pertSize
             self.atmos.ne += pert
             nStarPrev = np.copy(atom.nStar)
             atom.nStar[:] = lte_pops(atom.atomicModel, self.atmos, atom.nTotal)
-            atom.compute_collisions()
+            atom.compute_collisions(fillDiagonal=True)
             self.atmos.ne[:] = neStart
             atom.nStar[:] = nStarPrev
             dC.append((atom.C - Cprev) / pert)
@@ -809,7 +951,8 @@ class Context:
                     dF[start:start+atom.Nlevel, start:start+atom.Nlevel] = -atom.Gamma[:, :, k]
                     for t in atom.trans:
                         if not t.isLine:
-                            dF[start+t.i, Neqn-1] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k] 
+                            # dF[start+t.i, Neqn-1] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k] 
+                            dF[start+t.i, Neqn-1] = -((atom.Gamma[t.i, t.j, k] - atom.C[t.i, t.j, k]) / self.atmos.ne[k]) * atom.n[t.j, k]
                     for i in range(atom.Nlevel):
                         dF[start+i, Neqn-1] -= dC[idx][i, :, k] @ atom.n[:, k]
                     dF[start+atom.Nlevel-1, :] = 0.0
