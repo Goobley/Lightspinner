@@ -11,9 +11,12 @@ from formal_solver import piecewise_linear_1d, IPsi
 import constants as Const
 from background import Background
 from numba import njit
-from utils import voigt_H
+from utils import voigt_H, planck
 from typing import cast
 import warnings
+from tqdm import tqdm
+from scipy.optimize import newton_krylov
+import time
 
 @dataclass
 class UV:
@@ -433,6 +436,7 @@ class ComputationalAtom:
         # NOTE(cmo): Call setup wavelength so that all of the transitions
         # correctly have all of their arrays initialised
         self.setup_wavelength(0)
+        self.compute_collisions()
 
     def setup_wavelength(self, laIdx: int):
         """Configure the scratch matrices for the coming wavelength (of index
@@ -494,6 +498,12 @@ class ComputationalAtom:
         # NOTE(cmo): Some rates use spline interpolants that can, in odd cases,
         # go negative, so make sure that doesn't happen
         self.C[self.C < 0.0] = 0.0
+
+        for k in range(self.C.shape[-1]):
+            np.fill_diagonal(self.C[:, :, k], 0.0)
+            for i in range(self.Nlevel):
+                CDiag = np.sum(self.C[:, i, k])
+                self.C[i, i, k] = -CDiag
 
     def zero_rates(self):
         for t in self.trans:
@@ -573,6 +583,8 @@ class Context:
             self.activeAtoms.append(ComputationalAtom(a, atmos, spect, eqPops))
 
         self.J = np.zeros((spect.wavelength.shape[0], atmos.Nspace))
+        for la in range(self.J.shape[0]):
+            self.J[la, :] = planck(self.atmos.temperature, self.spect.wavelength[la])
         self.Jnew = np.zeros((spect.wavelength.shape[0], atmos.Nspace))
         self.I = np.zeros((spect.wavelength.shape[0], atmos.Nrays))
 
@@ -742,404 +754,234 @@ class Context:
 
         return maxRelChange
 
-    # def F(self, k):
-    #     atom = self.activeAtoms[0]
-    #     nLevel = atom.Nlevel
-    #     nEqn = nLevel + 1
+    def F_old(self, k):
+        atom = self.activeAtoms[0]
+        nLevel = atom.Nlevel
+        nEqn = nLevel + 1
 
-    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
-    #     F = np.zeros(nEqn)
-    #     F[:atom.Nlevel] = (atom.Gamma[:, :, k] @ atom.n[:, k])
-    #     # F[atom.Nlevel] = np.sum(stages * atom.n[:, k]) - self.atmos.ne[k]
-    #     F[-1] = 1.0 - atom.n[-1, k] / self.atmos.ne[k]
-    #     for atom in self.activeAtoms[1:]:
-    #         stages = np.array([l.stage for l in atom.atomicModel.levels])
-    #         F[-1] -= np.sum(stages * atom.n[:, k] / self.atmos.ne[k])
-    #     return F
+        stages = np.array([l.stage for l in atom.atomicModel.levels])
+        F = np.zeros(nEqn)
+        F[:atom.Nlevel] = -(atom.Gamma[:, :, k] @ atom.n[:, k])
+        F[-2] = self.atmos.ne[k] - atom.n[-1, k]
+        F[-1] = np.sum(atom.n[:, k]) - atom.nTotal[k]
+        return F
 
+    def F(self, k):
+        Nlevel = 0
+        for atom in self.activeAtoms:
+            Nlevel += atom.Nlevel
+        Neqn = Nlevel + 1
 
-    # def check_jac(self, k, pertSize=1e-4, fixCol=True):
-    #     atom = self.activeAtoms[0]
-    #     nLevel = atom.Nlevel
-    #     nEqn = nLevel + 1
+        stages = [np.array([l.stage for l in atom.atomicModel.levels]) for atom in self.activeAtoms]
+        F = np.zeros(Neqn)
+        F[-1] = self.atmos.ne[k]
+        start = 0
+        for idx, atom in enumerate(self.activeAtoms):
+            F[start:start+atom.Nlevel] = -(atom.Gamma[:, :, k] @ atom.n[:, k])
+            F[start + atom.Nlevel - 1] = np.sum(atom.n[:, k]) - atom.nTotal[k]
 
-    #     count = 0
-    #     delta = 1.0
-    #     dF = np.zeros((nEqn, nEqn))
-
-    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
-
-    #     # Gamma_ne = atom.Gamma[:, :, k] - atom.C[:, :, k]
-    #     # np.fill_diagonal(Gamma_ne, 0.0)
-    #     # for i in range(nLevel):
-    #     #     GamDiag = np.sum(Gamma_ne[:, i])
-    #     #     Gamma_ne[i, i] = -GamDiag
-    #     # for t in atom.trans:
-    #     #     if not t.isLine:
-    #     #         Gamma_ne[t.i, t.j] /= self.atmos.ne[k]
-
-    #     ctx.formal_sol_gamma_matrices()
-
-    #     F0 = self.F(k)
-
-    #     dF[:nLevel, :nLevel] = -atom.Gamma[:, :, k]
-    #     # for n in range(nLevel):
-    #     #     dF[n, n] = -atom.Gamma[n, n, k]
-
-    #     # dF[:nLevel, nLevel] = -Gamma_ne[:, nLevel-1] * atom.n[-1, k]
-    #     # dF[:nLevel, nLevel] = -Gamma_ne @ atom.n[:, k]
-    #     for t in atom.trans:
-    #         if not t.isLine:
-    #             # dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k] * atom.n[t.j, k] + atom.C[t.i, t.j, k])
-    #             dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k] * atom.n[t.j, k])
-    #     dF[nLevel-1, nLevel] = -np.sum(dF[:nLevel-1, nLevel])
-
-    #     dF[nLevel, :nLevel] = -stages
-    #     dF[nLevel, nLevel] = 1.0
-
-    #     Gamma0 = np.copy(atom.Gamma[:, :, k])
-
-    #     dFNum = np.zeros_like(dF)
-    #     for n in range(nLevel):
-    #         pert = atom.n[n, k] * pertSize
-    #         atom.n[n, k] += pert
-    #         Fn = self.F(k)
-    #         # self.formal_sol_gamma_matrices()
-    #         atom.n[n, k] -= pert
-    #         # dFNum[:, n] = (atom.Gamma[:, n, k] - Gamma0) / pert
-    #         dFNum[:, n] = (Fn - F0) / pert
-
-    #     pert = self.atmos.ne[k] * pertSize
-    #     self.atmos.ne[k] += pert
-    #     self.formal_sol_gamma_matrices(fixCol=fixCol)
-    #     Fn = self.F(k)
-    #     self.atmos.ne[k] -= pert
-    #     # dFNum[:nLevel, nLevel] = (atom.Gamma[:, n, k] - Gamma0) / pert
-    #     dFNum[:, nLevel] = (Fn - F0) / pert
-
-    #     return dF, dFNum
+            F[-1] -= stages[idx] @ atom.n[:, k]
+            start += atom.Nlevel
+        return F
 
 
-    # # def heinzel_post_update(self):
-    # #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
-    # #     atom = self.activeAtoms[0]
-    # #     nLevel = atom.Nlevel
-    # #     # for atom in self.activeAtoms:
-    # #     #     nLevel += atom.Nlevel
+    def nr_post_update(self):
+        # warnings.simplefilter('ignore')
+        # assert self.activeAtoms[0].atomicModel.name.startswith('H')
+        # atom = self.activeAtoms[0]
+        Nlevel = 0
+        for atom in self.activeAtoms:
+            Nlevel += atom.Nlevel
+        Neqn = Nlevel + 1
 
-    # #     nEqn = nLevel + 1
-    # #     Nspace = self.atmos.Nspace
-    # #     stages = np.array([l.stage for l in atom.atomicModel.levels])
-    # #     maxChange = 0.0
-
-    # #     for k in range(Nspace):
-    # #         count = 0
-    # #         delta = 1.0
-    # #         ndag = np.copy(atom.n)
-    # #         F = np.zeros(nEqn)
-    # #         dF = np.zeros((nEqn, nEqn))
-    # #         prev = np.copy(atom.n[:, k])
-
-    # #         Gamma_ne = atom.Gamma[:, :, k] - atom.C[:, :, k]
-    # #         np.fill_diagonal(Gamma_ne, 0.0)
-    # #         for i in range(nLevel):
-    # #             GamDiag = np.sum(Gamma_ne[:, i])
-    # #             Gamma_ne[i, i] = -GamDiag
-    # #         for t in atom.trans:
-    # #             if not t.isLine:
-    # #                 Gamma_ne[t.i, t.j] /= self.atmos.ne[k]
-
-    # #         F[:atom.Nlevel] = (atom.Gamma[:, :, k] @ ndag[:, k])
-    # #         F[atom.Nlevel] = np.sum(stages * ndag[:, k]) - self.atmos.ne[k]
-
-    # #         # dF[:nLevel, :nLevel] = -atom.Gamma[:, :, k]
-    # #         for n in range(nLevel):
-    # #             dF[n, n] = -atom.Gamma[n, n, k]
-    # #         dF[:nLevel, nLevel] = -Gamma_ne[:, nLevel-1] * ndag[-1, k]
-    # #         dF[nLevel, :nLevel] = -stages
-    # #         dF[nLevel, nLevel] = 1.0
-
-    # #         maxVar = np.argmax(ndag[:, k])
-    # #         # dF[maxVar, :nLevel] = 1.0 / atom.nTotal[k]
-    # #         # dF[maxVar, nLevel] = 0.0
-    # #         # F[maxVar] = -1.0
-    # #         # F[maxVar] += np.sum(atom.n[:, k] / atom.nTotal[k])
-    # #         dF[maxVar, :nLevel] = 1.0
-    # #         dF[maxVar, nLevel] = 0.0
-    # #         F[maxVar] = (atom.nTotal[k] - np.sum(ndag[:, k]))
-
-    # #         update = solve(dF, F)
-    # #         print('------ %d ------' % k)
-    # #         print(F)
-    # #         print(dF)
-    # #         print(update)
-    # #         print(atom.n[:, k], self.atmos.ne[k])
-    # #         print('------------')
-    # #         atom.n[:, k] += update[:nLevel]
-    # #         delta = np.max(np.abs(1.0 - ndag[:, k] / atom.n[:, k]))
-    # #         maxChange = max(delta, maxChange)
-    # #         print(delta)
-    # #         print(count)
-    # #         self.atmos.ne[k] += update[-1]
-
-    # #     return maxChange
-
-
-    # def paletou_post_update(self):
-    #     warnings.simplefilter('ignore')
-    #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
-    #     atom = self.activeAtoms[0]
-    #     nLevel = atom.Nlevel
-    #     # for atom in self.activeAtoms:
-    #     #     nLevel += atom.Nlevel
-
-    #     nEqn = nLevel + 1
-    #     Nspace = self.atmos.Nspace
-    #     self.atmos.ne[:] = 0.0
-    #     for a in self.activeAtoms:
-    #         stages = np.array([l.stage for l in a.atomicModel.levels])
-    #         self.atmos.ne[:] += np.sum(stages[:, None] * a.n, axis=0)
-    #     # for p in self.eqPops:
-    #     #     p.nStar[:] = lte_pops(p.model, self.atmos, p.nTotal)
-    #     stages = np.array([l.stage for l in atom.atomicModel.levels])
-    #     maxChange = 0.0
-
-    #     # self.atmos.ne[:] = atom.n[-1, :]
-
-    #     ndag = np.copy(atom.n)
-    #     Cprev = np.copy(atom.C)
-    #     neStart = np.copy(self.atmos.ne)
-        
-    #     pertSize = 1e-3
-    #     pert = neStart * pertSize
-    #     self.atmos.ne += pert
-    #     atom.compute_collisions()
-    #     self.atmos.ne[:] = neStart
-    #     dC = (atom.C - Cprev) / pert
-    #     atom.C[:] = Cprev
-
-    #     for k in range(Nspace):
-    #         for it in range(1000):
-    #             delta = 1.0
-
-    #             dF = np.zeros((nEqn, nEqn))
-    #             Fg = self.F(k)
-
-    #             dF[:nLevel, :nLevel] = atom.Gamma[:, :, k]
-    #             for t in atom.trans:
-    #                 if not t.isLine:
-    #                     dF[t.i, nLevel] = (t.Rji[k] / self.atmos.ne[k] + dC[t.i, t.j, k]) * atom.n[t.j, k]
-    #             dF[nLevel-1, nLevel] = -np.sum(dF[:nLevel-1, nLevel])
-
-    #             dF[nLevel, :nLevel] = -stages
-    #             dF[nLevel, nLevel] = 1.0
-
-    #             nTot = np.sum(atom.n[:, k])
-    #             maxLevel = np.argmax(atom.n[:, k])
-    #             Fg[maxLevel] = 1.0
-    #             Fg[maxLevel] -= np.sum(atom.n[:, k] / nTot)
-
-    #             dF[maxLevel, -1] = 0.0
-    #             dF[maxLevel, :nLevel] = -1.0 / nTot
-
-    #             Fg *= -1.0
-    #             for ii in range(nLevel):
-    #                 dF[ii, :] *= atom.n[ii, k]
-    #             dF[-1, :] *= self.atmos.ne[k]
-
-    #             # for n in range(nLevel):
-    #             #     dF[:nLevel, n] /= atom.n[n, k]
-    #             # dF[:nLevel, nLevel] /= self.atmos.ne[k]
-
-    #             # sol = np.zeros(nEqn)
-    #             # sol[:nLevel] = atom.n[:, k]
-    #             # sol[-1] = self.atmos.ne[k]
-
-    #             # F = dF @ 
-
-    #             # maxIdx = np.argmax()
-
-    #             # F[:nLevel] /= atom.n[:, k]
-    #             # F[nLevel] /= self.atmos.ne[k]
-
-    #             update = solve(dF, Fg)
-    #             if k == 60:
-    #                 print('------ %d ------' % k)
-    #                 print(Fg)
-    #                 print(dF)
-    #                 print(update)
-    #                 print(atom.n[:, k], self.atmos.ne[k])
-    #                 print('------------')
-    #             atom.n[:, k] *= (1.0 + update[:nLevel])
-    #             self.atmos.ne[k] *= (1.0 + update[-1])
-    #             maxItChange = np.max(np.abs(update))
-    #             maxChange = max(maxItChange, maxChange)
-    #             if maxItChange < 1e-5:
-    #                 if it > 2:
-    #                     print('%d: %d iter' % (k, it))
-    #                 break
-
-    #     return maxChange
-
-
-    # # def heinzel_post_update(self):
-    # #     warnings.simplefilter('ignore')
-    # #     assert self.activeAtoms[0].atomicModel.name.startswith('H')
-    # #     atom = self.activeAtoms[0]
-    # #     nLevel = atom.Nlevel
-    # #     # for atom in self.activeAtoms:
-    # #     #     nLevel += atom.Nlevel
-
-    # #     nEqn = nLevel + 1
-    # #     Nspace = self.atmos.Nspace
-    # #     stages = np.array([l.stage for l in atom.atomicModel.levels])
-    # #     # maxChange = 0.0
-    # #     maxChange = np.zeros(Nspace)
-
-    # #     ndag = np.copy(atom.n)
-
-    # #     # k = 60
-    # #     for k in range(Nspace):
-
-    # #         GammaRad = atom.Gamma[:, :, k] - atom.C[:, :, k]
-    # #         np.fill_diagonal(GammaRad, 0.0)
-    # #         for i in range(nLevel):
-    # #             GamDiag = np.sum(GammaRad[:, i])
-    # #             GammaRad[i, i] = -GamDiag
-    # #         C = np.copy(atom.C[:, :, k])
-
-    # #         delta = 1.0
-
-    # #         var = np.zeros(nEqn)
-    # #         var[:nLevel] = atom.n[:, k]
-    # #         var[-1] = self.atmos.ne[k]
-
-    # #         GammaTot = np.copy(atom.Gamma[:, :, k])
-    # #         # F = np.zeros(nEqn)
-    # #         dFF = np.zeros((nEqn, nEqn))
-    # #         dFF[:nLevel, :nLevel] = GammaTot
-    # #         # F = GammaTot @ atom.n[:, k]
-    # #         F = self.F(k)
-
-    # #         # dFF[-1, -2] = -1.0 / var[-1]
-    # #         # dFF[-1, -1] = var[-2] / var[-1]**2
-    # #         dFF[-1, -2] = -1.0 / var[-2]
-    # #         dFF[-1, -1] = 1.0 / var[-1]
-
-    # #         # np.fill_diagonal(GammaRad, 0.0)
-
-    # #         # for ii in range(nLevel):
-    # #         #     if ii == nLevel - 1:
-    # #         #         s = np.sum(GammaRad[:, -1]) / var[-1]
-    # #         #         s0 = np.sum(C[:, -1]) / var[-1]
-
-    # #         #         dFF[-2, -1] = var[-2] * (s + 2 * s0)
-    # #         #         dFF[-2, -1] -= np.sum(var[:nLevel] / var[-1] * C[-1, :nLevel])
-    # #         #     else:
-    # #         #         s = np.sum(GammaRad[:, ii]) / var[-1]
-    # #         #         dFF[ii, -1] = var[ii] * s
-    # #         #         dFF[ii, -1] -= np.sum(var[:nLevel-1] * C[ii, :nLevel-1] / var[-1])
-    # #         #         dFF[ii, -1] += var[ii] / var[-1] * C[-1, ii] - var[-2] / var[-1] * (GammaRad[ii, -1] + 2.0 * C[ii, -1])
-
-    # #         nTot = np.sum(atom.n[:, k])
-    # #         maxLevel = np.argmax(atom.n[:, k])
-    # #         F[maxLevel] = 1.0
-    # #         F[maxLevel] -= np.sum(var[:nLevel] / nTot)
-
-    # #         dFF[maxLevel, -1] = 0.0
-    # #         dFF[maxLevel, :nLevel] = -1.0 / nTot
-
-    # #         F *= -1.0
-    # #         for ii in range(nEqn):
-    # #             dFF[ii, :] *= var
-
-    # #         update = solve(dFF, F)
-    # #         if k == 60:
-    # #             print('------ %d ------' % k)
-    # #             print(F)
-    # #             # print(Fg)
-    # #             print(dFF)
-    # #             print(update)
-    # #             print(atom.n[:, k], self.atmos.ne[k])
-    # #             print('------------')
-    # #         atom.n[:, k] *= (1.0 + update[:nLevel])
-    # #         self.atmos.ne[k] *= (1.0 + update[-1])
-    # #         # maxChange = max(maxChange, np.max(np.abs(update)))
-    # #         maxChange[k] = np.max(np.abs(update))
-    # #         # delta = np.max(np.abs(1.0 - ndag[:, k] / atom.n[:, k]))
-    # #         # maxChange = max(delta, maxChange)
-    # #         # self.atmos.ne[k] *= update[-1]
-
-    # #     return maxChange
-
-    def F(self):
         Nspace = self.atmos.Nspace
-        Nrays = self.atmos.Nrays
-        Nspect = self.spect.wavelength.shape[0]
-        background = self.background
+        stages = [np.array([l.stage for l in atom.atomicModel.levels]) for atom in self.activeAtoms]
+        maxChange = 0.0
 
-        activeAtoms = self.activeAtoms
-        for a in activeAtoms:
-            a.zero_rates()
+        neStart = np.copy(self.atmos.ne)
 
-        if not fixCol:
-            for atom in activeAtoms:
-                atom.setup_Gamma()
-                atom.compute_collisions()
-                atom.Gamma += atom.C
+        ctstart = time.time()
+        dC = []
+        for atom in self.activeAtoms:
+            atom.compute_collisions()
+            Cprev = np.copy(atom.C)
+            pertSize = 1e-2
+            pert = neStart * pertSize
+            self.atmos.ne += pert
+            nStarPrev = np.copy(atom.nStar)
+            atom.nStar[:] = lte_pops(atom.atomicModel, self.atmos, atom.nTotal)
+            atom.compute_collisions()
+            self.atmos.ne[:] = neStart
+            atom.nStar[:] = nStarPrev
+            dC.append((atom.C - Cprev) / pert)
+            atom.C[:] = Cprev
+        ctend = time.time()
 
-        self.Jnew.fill(0.0)
+        print(dC[0][:,:,40])
+        print(dC[0].max())
+        # print(np.sum(dC[0][:,:,40]@self.activeAtoms[0].n[:, 40]))
+        print(self.activeAtoms[0].C[:,:,40])
 
-        for la, wav in enumerate(self.spect.wavelength):
-            for atom in activeAtoms:
-                atom.setup_wavelength(la)
-
-            for mu in range(Nrays):
-                for toFrom, sign in enumerate([-1.0, 1.0]):
-                    chiTot = np.zeros(Nspace)
-                    etaTot = np.zeros(Nspace)
-
-                    for atom in activeAtoms:
-                        for t in atom.trans:
-                            if not t.active[la]:
-                                continue
-
-                            uv = t.uv(la, mu, toFrom)
-                            # NOTE(cmo): Compute opacity and emissivity in transition t
-                            # Equation (1) in [U01]
-                            chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
-                            eta = atom.n[t.j] * uv.Uji
-
-                            # NOTE(cmo): Accumulate onto total opacity and emissivity 
-                            # as well as total emissivity in the atom -- needed for Ieff
-                            chiTot += chi
-                            etaTot += eta
-
-                    # NOTE(cmo): Accumulate background opacity
-                    chiTot += background.chi[la]
-                    # NOTE(cmo): Compute source function
-                    S = (etaTot + background.eta[la] + background.sca[la] * self.J[la]) / chiTot
-
-                    # NOTE(cmo): Compute formal solution and approximate operator PsiStar
-                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
-                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
-                    # but the outgoing rays happen after so we can simply save it every subiteration
-                    self.I[la, mu] = iPsi.I[0]
-                    # NOTE(cmo): Add contribution to local mean intensity field Jbar
-                    self.Jnew[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
-
-
-    def fdjac(self):
-        Nspace = self.atmos.Nspace
         for k in range(Nspace):
+                delta = 1.0
 
-    # def broyden_solve(self):
+                dF = np.zeros((Neqn, Neqn))
+                Fg = self.F(k)
+
+                start = 0
+                for idx, atom in enumerate(self.activeAtoms):
+                    dF[start:start+atom.Nlevel, start:start+atom.Nlevel] = -atom.Gamma[:, :, k]
+                    for t in atom.trans:
+                        if not t.isLine:
+                            dF[start+t.i, Neqn-1] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k] 
+                    for i in range(atom.Nlevel):
+                        dF[start+i, Neqn-1] -= dC[idx][i, :, k] @ atom.n[:, k]
+                    dF[start+atom.Nlevel-1, :] = 0.0
+                    dF[start+atom.Nlevel-1, start:start+atom.Nlevel] = 1.0
+
+                    dF[-1, start:start+atom.Nlevel] = -stages[idx]
+                    start += atom.Nlevel
+
+                dF[-1, -1] = 1.0
+
+                Fg *= -1.0
+                update = solve(dF, Fg)
+                if k == 15:
+                    print('------ %d ------' % k)
+                    print(Fg)
+                    print(dF)
+                    print(update)
+                    # print(atom.n[:, k], self.atmos.ne[k])
+                    print(dF @ update)
+                    print('%e' % (ctend - ctstart))
+                    print('------------')
+                    # raise ValueError
+                start = 0
+                for atom in self.activeAtoms:
+                    atom.n[:, k] += update[start:start+atom.Nlevel]
+                    start += atom.Nlevel
+                self.atmos.ne[k] += update[-1]
+                pops = np.zeros(Neqn)
+                start = 0
+                for atom in self.activeAtoms:
+                    pops[start:start+atom.Nlevel] = atom.n[:, k]
+                    start += atom.Nlevel
+                pops[-1] = self.atmos.ne[k]
+                maxItChange = np.max(np.abs(update/pops))
+                maxChange = max(maxItChange, maxChange)
+
+        return maxChange
 
 
 
+    def nr_post_update_old(self):
+        # warnings.simplefilter('ignore')
+        assert self.activeAtoms[0].atomicModel.name.startswith('H')
+        atom = self.activeAtoms[0]
+        nLevel = atom.Nlevel
+        # for atom in self.activeAtoms:
+        #     nLevel += atom.Nlevel
+
+        nEqn = nLevel + 1
+        Nspace = self.atmos.Nspace
+        # self.atmos.ne[:] = 0.0
+        # for a in self.activeAtoms:
+        #     stages = np.array([l.stage for l in a.atomicModel.levels])
+        #     self.atmos.ne[:] += np.sum(stages[:, None] * a.n, axis=0)
+        # for p in self.eqPops:
+        #     p.nStar[:] = lte_pops(p.model, self.atmos, p.nTotal)
+        stages = np.array([l.stage for l in atom.atomicModel.levels])
+        maxChange = 0.0
+
+        # self.atmos.ne[:] = atom.n[-1, :]
+
+        ndag = np.copy(atom.n)
+        Cprev = np.copy(atom.C)
+        neStart = np.copy(self.atmos.ne)
+        
+        pertSize = 1e-2
+        pert = neStart * pertSize
+        self.atmos.ne += pert
+        nStarPrev = np.copy(atom.nStar)
+        atom.nStar[:] = lte_pops(atom.atomicModel, self.atmos, atom.nTotal)
+        atom.compute_collisions()
+        self.atmos.ne[:] = neStart
+        atom.nStar[:] = nStarPrev
+        dC = (atom.C - Cprev) / pert
+        atom.C[:] = Cprev
+
+        for k in range(Nspace):
+            for it in range(1):
+                delta = 1.0
+
+                dF = np.zeros((nEqn, nEqn))
+                Fg = self.F(k)
+
+                dF[:nLevel, :nLevel] = -atom.Gamma[:, :, k]
+                for t in atom.trans:
+                    if not t.isLine:
+                        # dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k] + dC[t.i, t.j, k]) * atom.n[t.j, k]
+                        dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k] - dC[t.i, :, k] @ atom.n[:, k]
+                        # dF[t.i, nLevel] = -(t.Rji[k] / self.atmos.ne[k]) * atom.n[t.j, k]
 
 
-            
-            
+                dF[nLevel-1, :] = 0.0
+                dF[nLevel-1, nLevel-1] = -1.0
+                dF[nLevel-1, nLevel] = 1.0
+
+                dF[nLevel, :nLevel] = 1.0
 
 
+                # dF[maxLevel, -1] = 0.0
+                # dF[maxLevel, :] = -1.0 / nTot
+
+                Fg *= -1.0
+                # for ii in range(nLevel):
+                #     # dF[ii, :] *= atom.n[ii, k]
+                #     dF[:, ii] *= atom.n[ii, k]
+                # # dF[-1, :] *= self.atmos.ne[k]
+                # dF[:, -1] *= self.atmos.ne[k]
+
+                # for n in range(nLevel):
+                #     dF[:nLevel, n] /= atom.n[n, k]
+                # dF[:nLevel, nLevel] /= self.atmos.ne[k]
+
+                # sol = np.zeros(nEqn)
+                # sol[:nLevel] = atom.n[:, k]
+                # sol[-1] = self.atmos.ne[k]
+
+                # F = dF @ 
+
+                # maxIdx = np.argmax()
+
+                # F[:nLevel] /= atom.n[:, k]
+                # F[nLevel] /= self.atmos.ne[k]
+
+                # print(Fg)
+                # print(dF)
+                update = solve(dF, Fg)
+                # print(update)
+                # print('------ %d ------' % k)
+                if k == 40:
+                    print('------ %d ------' % k)
+                    print(Fg)
+                    print(dF)
+                    print(update)
+                    # print(atom.n[:, k], self.atmos.ne[k])
+                    print(dF @ update)
+                    print('------------')
+                # atom.n[:, k] *= (1.0 + update[:nLevel])
+                atom.n[:, k] += update[:nLevel]
+                self.atmos.ne[k] += update[-1]
+                # self.atmos.ne[k] *= (1.0 + update[-1])
+                pops = np.zeros(nEqn)
+                pops[:nLevel] = atom.n[:, k]
+                pops[-1] = self.atmos.ne[k]
+                maxItChange = np.max(np.abs(update/pops))
+                maxChange = max(maxItChange, maxChange)
+                if maxItChange < 1e-5:
+                    if it > 2:
+                        print('%d: %d iter' % (k, it))
+                    break
+
+        return maxChange

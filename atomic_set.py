@@ -345,7 +345,6 @@ class RadiativeSet:
             atmos.ne[:] = ne
 
             relDiff = np.nanmax(np.abs(1.0 - prevNe / ne))
-            print(relDiff)
             maxRelDiff = np.nanmax(relDiff)
             if maxRelDiff < 1e-3:
                 print("Iterate LTE: %d iterations" % it)
