@@ -736,6 +736,43 @@ class Context:
 
         return dJMax
 
+    # def stat_equil(self):
+    #     """Update the populations of all active species towards statistical
+    #     equilibrium, using the current version of the Gamma matrix.
+
+    #     Returns
+    #     -------
+    #     maxRelChange : float
+    #         The maximum relative change in any of the atomic populations (at
+    #         the depth point with maximum population change).
+    #     """
+    #     Nspace = self.atmos.Nspace
+
+    #     maxRelChange = 0.0
+    #     for atom in self.activeAtoms:
+    #         Nlevel = atom.Nlevel
+    #         for k in range(Nspace):
+    #             # NOTE(cmo): Find the level with the maximum population at this depth point
+    #             iEliminate = np.argmax(atom.n[:, k])
+    #             # NOTE(cmo): Copy the Gamma matrix so we can modify it to contain the total number conservation equation
+    #             Gamma = np.copy(atom.Gamma[:, :, k])
+
+    #             # NOTE(cmo): Set all entries on the row to eliminate to 1.0 for number conservation
+    #             Gamma[iEliminate, :] = 1.0
+    #             # NOTE(cmo): Set solution vector to 0 (as per stat. eq.) other than entry for which we are conserving population
+    #             nk = np.zeros(Nlevel)
+    #             nk[iEliminate] = atom.nTotal[k]
+
+    #             # NOTE(cmo): Solve Gamma . n = 0 (constrained by conservation equation)
+    #             nOld = np.copy(atom.n[:, k])
+    #             nNew = solve(Gamma, nk)
+    #             # NOTE(cmo): Compute relative change and update populations
+    #             change = np.abs(1.0 - nOld / nNew)
+    #             maxRelChange = max(maxRelChange, change.max())
+    #             atom.n[:, k] = nNew
+
+    #     return maxRelChange
+
     def stat_equil(self):
         """Update the populations of all active species towards statistical
         equilibrium, using the current version of the Gamma matrix.
@@ -757,17 +794,23 @@ class Context:
                 # NOTE(cmo): Copy the Gamma matrix so we can modify it to contain the total number conservation equation
                 Gamma = np.copy(atom.Gamma[:, :, k])
 
+                rhs = -(Gamma @ atom.n[:, k])
+
+                for i in range(Gamma.shape[1]):
+                    Gamma[:, i] *= atom.n[i, k]
                 # NOTE(cmo): Set all entries on the row to eliminate to 1.0 for number conservation
-                Gamma[iEliminate, :] = 1.0
+                Gamma[iEliminate, :] = atom.n[:, k]
                 # NOTE(cmo): Set solution vector to 0 (as per stat. eq.) other than entry for which we are conserving population
-                nk = np.zeros(Nlevel)
-                nk[iEliminate] = atom.nTotal[k]
+                rhs[iEliminate] = atom.nTotal[k] - np.sum(atom.n[:, k])
 
                 # NOTE(cmo): Solve Gamma . n = 0 (constrained by conservation equation)
                 nOld = np.copy(atom.n[:, k])
-                nNew = solve(Gamma, nk)
+                dn = solve(Gamma, rhs)
                 # NOTE(cmo): Compute relative change and update populations
-                change = np.abs(1.0 - nOld / nNew)
+                # change = np.abs(1.0 - nOld / nNew)
+                # change = np.abs(dn / nOld)
+                change = np.abs(dn)
+                nNew = (1 + dn) * nOld
                 maxRelChange = max(maxRelChange, change.max())
                 atom.n[:, k] = nNew
 
