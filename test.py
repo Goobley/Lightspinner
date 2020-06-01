@@ -1,16 +1,18 @@
+import numpy as np
+import matplotlib.pyplot as plt
+plt.ion()
 from fal import Falc82
 from rh_atoms import CaII_atom, H_6_atom
 from atomic_set import RadiativeSet
 from rh_method import Context
 from background import Background
-import matplotlib.pyplot as plt
 
 atmosConst = Falc82()
 atmosConst.quadrature(5)
 atmos = atmosConst.convert_scales()
 
 aSet = RadiativeSet([CaII_atom(), H_6_atom()])
-aSet.set_active('Ca')
+aSet.set_active('H', 'Ca')
 spect = aSet.compute_wavelength_grid()
 eqPops = aSet.compute_eq_pops(atmos)
 
@@ -28,5 +30,6 @@ while dJ > 2e-3 or dPops > 1e-3:
         dPops = ctx.stat_equil()
     print('Iteration %.3d: dJ: %.2e, dPops: %s' % (i, dJ, 'Just iterating Jbar' if i < 3 else '%.2e' % dPops))
 
-plt.plot(spect.wavelength, ctx.I[:, -1])
-plt.show()
+plt.semilogy(spect.wavelength, ctx.I[:, -1])
+Iref = np.load('Iref2.npy')
+plt.semilogy(spect.wavelength, Iref[:, -1], '--')

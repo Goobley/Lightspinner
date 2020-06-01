@@ -16,6 +16,10 @@ class SpectrumConfiguration:
     models: List[AtomicModel]
     blueIdx: List[int]
     activeSet: List[List[Union[AtomicLine, AtomicContinuum]]]
+    freq: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        self.freq = Const.CLight / (self.wavelength * Const.NM_TO_M)
 
     def subset_configuration(self, wavelengths, expandLineGridsNm=0.0) -> 'SpectrumConfiguration':
         Nblue = np.searchsorted(self.wavelength, wavelengths[0])
@@ -97,7 +101,7 @@ class SpectrumConfiguration:
                         lowerLevels[t.atom.name][-1].add(t.i)
 
 
-        return SpectrumConfiguration(radSet=radSet, wavelength=wavelengths, transitions=trans, models=activeAtoms, blueIdx=blueIdx, 
+        return SpectrumConfiguration(radSet=radSet, wavelength=wavelengths, transitions=trans, models=activeAtoms, blueIdx=blueIdx,
                                      activeSet=activeSet)
 
 
@@ -294,7 +298,7 @@ class RadiativeSet:
     def validate_sets(self):
         if (self.activeSet | self.passiveSet | self.detailedLteSet) != set(self.atoms):
             raise ValueError('Problem with distribution of Atoms inside AtomicSet')
-    
+
     def set_active(self, *args: str):
         names = set(args)
         for atomName in names:

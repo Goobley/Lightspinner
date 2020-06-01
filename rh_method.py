@@ -53,7 +53,7 @@ class ComputationalTransition:
         The line profile in for each [lambda, mu, toFrom, depthPoint] (lines
         only).
     wphi : np.ndarray
-        The weighting factor for integrating the line profile s.t. 
+        The weighting factor for integrating the line profile s.t.
         \int d\nu d\Omega phi = 1
         at each depth in the atmosphere (lines only).
     alpha : np.ndarray
@@ -107,12 +107,14 @@ class ComputationalTransition:
         self.transModel = trans
         self.atom = compAtom
         self.wavelength = trans.wavelength
-        
+        self.freq = Const.CLight / (self.wavelength * Const.NM_TO_M)
+
         if isinstance(trans, AtomicLine):
             self.Aji = trans.Aji
             self.Bji = trans.Bji
             self.Bij = trans.Bij
             self.lambda0 = trans.lambda0
+            self.nu0 = Const.CLight / (self.lambda0 * Const.NM_TO_M)
         else:
             self.alpha = trans.alpha
 
@@ -167,7 +169,7 @@ class ComputationalTransition:
         la : Optional[int]=None
             An index into the transition's wavelength array. If provided then
             only the weight for this index is returned.
-        
+
         Returns
         -------
         float or np.ndarray
@@ -175,23 +177,43 @@ class ComputationalTransition:
             point, or the entire wavelength grid.
         """
 
-        if self.isLine:
-            dopplerWidth = Const.CLight / self.lambda0
-        else:
-            dopplerWidth = 1.0
+        # if self.isLine:
+        #     # dopplerWidth = Const.CLight / self.lambda0
+        #     # dopplerWidth = Const.CLight / self.lambda0**2 / Const.NM_TO_M
+        #     dopplerWidth = self.nu0 / self.lambda0
+        # else:
+        #     # dopplerWidth = 1.0
+        #     dopplerWidth = Const.CLight / self.wavelength[la]**2 / Const.NM_TO_M
+
+        # # dopplerWidth = 1.0
+
+        # if la is not None:
+        #     if la == 0:
+        #         return 0.5 * (self.wavelength[1] - self.wavelength[0]) * dopplerWidth
+        #     elif la == self.wavelength.shape[0]-1:
+        #         return 0.5 * (self.wavelength[-1] - self.wavelength[-2]) * dopplerWidth
+        #     else:
+        #         return 0.5 * (self.wavelength[la+1] - self.wavelength[la-1]) * dopplerWidth
+
+        # wla = np.zeros_like(self.wavelength)
+        # wla[0] = 0.5 * (self.wavelength[1] - self.wavelength[0])
+        # wla[-1] = 0.5 * (self.wavelength[-1] - self.wavelength[-2])
+        # wla[1:-1] = 0.5 * (self.wavelength[2:] - self.wavelength[:-2])
+
+        dopplerWidth = 1.0
 
         if la is not None:
             if la == 0:
-                return 0.5 * (self.wavelength[1] - self.wavelength[0]) * dopplerWidth
-            elif la == self.wavelength.shape[0]-1:
-                return 0.5 * (self.wavelength[-1] - self.wavelength[-2]) * dopplerWidth
+                return -0.5 * (self.freq[1] - self.freq[0])
+            elif la == self.freq.shape[0]-1:
+                return -0.5 * (self.freq[-1] - self.freq[-2])
             else:
-                return 0.5 * (self.wavelength[la+1] - self.wavelength[la-1]) * dopplerWidth
+                return -0.5 * (self.freq[la+1] - self.freq[la-1])
 
         wla = np.zeros_like(self.wavelength)
-        wla[0] = 0.5 * (self.wavelength[1] - self.wavelength[0])
-        wla[-1] = 0.5 * (self.wavelength[-1] - self.wavelength[-2])
-        wla[1:-1] = 0.5 * (self.wavelength[2:] - self.wavelength[:-2])
+        wla[0] = -0.5 * (self.freq[1] - self.freq[0])
+        wla[-1] = -0.5 * (self.freq[-1] - self.freq[-2])
+        wla[1:-1] = -0.5 * (self.freq[2:] - self.freq[:-2])
 
         return dopplerWidth * wla
 
@@ -236,7 +258,7 @@ class ComputationalTransition:
                 wlamu = wLambda * 0.5 * atmos.wmu[mu]
                 for toFrom, sign in enumerate([-1.0, 1.0]):
                     vk = v + sign * vlosDop[mu]
-                    phi[la, mu, toFrom, :] = voigt_H(aDamp, vk) / (sqrtPi * self.atom.vBroad)
+                    phi[la, mu, toFrom, :] = voigt_H(aDamp, vk) / (sqrtPi * self.atom.vBroad) * Const.CLight / self.nu0
                     wPhi[:] += phi[la, mu, toFrom, :] * wlamu[la]
 
         self.wphi = 1.0 / wPhi
@@ -268,6 +290,8 @@ class ComputationalTransition:
         hc_4pi = 0.25 * Const.HC / np.pi
 
         if self.isLine:
+            # hnu_4pi = 0.25 * Const.HPlanck * self.freq[lt] / np.pi
+            hnu_4pi = 0.25 * Const.HPlanck * self.nu0 / np.pi
             # NOTE(cmo): (2) of [U01] under the assumption of CRD (i.e. phi == psi).
             # Implented as per (26) of [U01]. These appear a factor of
             # \lambda_0 larger than is correct, but this factor is encompassed
@@ -276,14 +300,15 @@ class ComputationalTransition:
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
             phi = self.phi[lt, mu, toFrom, :]
-            Vij = hc_4pi * self.Bij * phi
+            Vij = hnu_4pi * self.Bij * phi
             Vji = self.gij * Vij
             Uji = self.Aji / self.Bji * Vji
         else:
             # NOTE(cmo): (3) of [U01] using the expression for gij given in (26)
             Vij = self.alpha[lt]
             Vji = self.gij * Vij
-            Uji = 2.0 * Const.HC / (Const.NM_TO_M * self.wavelength[lt])**3 * Vji
+            # Uji = 2.0 * Const.HC / (Const.NM_TO_M * self.wavelength[lt])**3 * Vji
+            Uji = 2.0 * Const.HPlanck * self.freq[lt]**3 / Const.CLight**2 * Vji
 
         return UV(Uji=Uji, Vij=Vij, Vji=Vji)
 
@@ -436,6 +461,7 @@ class ComputationalAtom:
         self.chi = np.zeros((self.Nlevel, Nspace))
 
         hc_k = Const.HC / (Const.KBoltzmann * Const.NM_TO_M)
+        h_k = Const.HPlanck / Const.KBoltzmann
         for kr, t in enumerate(self.trans):
             t.gij = self.gij[kr]
             if not t.active[laIdx]:
@@ -448,11 +474,14 @@ class ComputationalAtom:
                 # off by a factor of \lambda, but aren't due to the use Doppler
                 # units (inside wlambda).
                 self.gij[kr, :] = t.Bji / t.Bij
-                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / Const.HC
+                # self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / Const.HC
+                # self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / (Const.HC / (Const.NM_TO_M * t.lambda0))
+                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / (Const.HPlanck * self.spect.freq[laIdx])
             else:
                 self.gij[kr, :] = self.nStar[t.i] / self.nStar[t.j] \
-                    * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
-                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
+                    * np.exp(-h_k * self.spect.freq[laIdx] / self.atmos.temperature)
+                # self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
+                self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / Const.HPlanck / self.spect.freq[laIdx]
 
     def zero_angle_dependent_vars(self):
         """
@@ -478,7 +507,7 @@ class ComputationalAtom:
 
         self.C = np.zeros_like(self.Gamma)
         # NOTE(cmo): Get colllisional rates from each term on the atomic model.
-        # They are added to the correct location in the C matrix so it can be added directly to Gamma. 
+        # They are added to the correct location in the C matrix so it can be added directly to Gamma.
         # i.e. The rate from j to i is put into C[i, j]
         for col in self.atomicModel.collisions:
             col.compute_rates(self.atmos, self.nStar, self.C)
@@ -620,7 +649,7 @@ class Context:
                             atom.chi[t.j] -= chi
                             # NOTE(cmo): Accumulate U, this is like the chi matrix
                             atom.U[t.j] += uv.Uji
-                            # NOTE(cmo): Accumulate onto total opacity and emissivity 
+                            # NOTE(cmo): Accumulate onto total opacity and emissivity
                             # as well as total emissivity in the atom -- needed for Ieff
                             chiTot += chi
                             etaTot += eta
@@ -633,7 +662,7 @@ class Context:
 
                     # NOTE(cmo): Compute formal solution and approximate operator PsiStar
                     iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
-                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
+                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays,
                     # but the outgoing rays happen after so we can simply save it every subiteration
                     self.I[la, mu] = iPsi.I[0]
                     # NOTE(cmo): Add contribution to local mean intensity field Jbar
@@ -641,8 +670,8 @@ class Context:
 
                     # NOTE(cmo): Construct Gamma matrix for each atom
                     for atom in self.activeAtoms:
-                        # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using 
-                        # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply 
+                        # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using
+                        # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply
                         # the sum of \eta in the currently active transitions in an atom.
                         # I find (2.20) of RH92 a little confusing here, as I
                         # believe they are working on the assumption of only
@@ -668,7 +697,7 @@ class Context:
 
                             # NOTE(cmo): Add the contributions to the Gamma matrix
                             # Follow (2.19) in [RH92] or (24) in [U01] -- we use the properties
-                            # of the Gamma matrix to construct the off-diagonal components later 
+                            # of the Gamma matrix to construct the off-diagonal components later
                             # and can therefore ignore all terms with a Kronecker delta.
 
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
@@ -693,7 +722,7 @@ class Context:
 
         # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
-        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums 
+        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums
         # of every other entry on their column in Gamma.
         for atom in activeAtoms:
             for k in range(Nspace):
