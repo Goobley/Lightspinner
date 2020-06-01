@@ -794,16 +794,18 @@ class Context:
                 # NOTE(cmo): Copy the Gamma matrix so we can modify it to contain the total number conservation equation
                 Gamma = np.copy(atom.Gamma[:, :, k])
 
+                # NOTE(cmo): E vector from MULTI
                 rhs = -(Gamma @ atom.n[:, k])
 
+                # NOTE(cmo): Scale operator so dn will be dn/n
                 for i in range(Gamma.shape[1]):
                     Gamma[:, i] *= atom.n[i, k]
-                # NOTE(cmo): Set all entries on the row to eliminate to 1.0 for number conservation
+                # NOTE(cmo): Set entries on the row to eliminate to n_j for number conservation
                 Gamma[iEliminate, :] = atom.n[:, k]
-                # NOTE(cmo): Set solution vector to 0 (as per stat. eq.) other than entry for which we are conserving population
+                # NOTE(cmo): Number conservation equation
                 rhs[iEliminate] = atom.nTotal[k] - np.sum(atom.n[:, k])
 
-                # NOTE(cmo): Solve Gamma . n = 0 (constrained by conservation equation)
+                # NOTE(cmo): Solve Gamma . dn/n = E (constrained by conservation equation)
                 nOld = np.copy(atom.n[:, k])
                 dn = solve(Gamma, rhs)
                 # NOTE(cmo): Compute relative change and update populations
