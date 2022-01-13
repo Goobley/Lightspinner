@@ -128,7 +128,7 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
         # NOTE(cmo): dtau_dw and dS_dw like uw for next iteration
         dtau_dw = 0.5 * (chi[k] + chi[k+dk]) * zmu * np.abs(z[k] - z[k+dk])
         dS_dw = (S[k] - S[k+dk]) / dtau_dw
-        
+
         # NOTE(cmo): Set values (Iupw, dS_uw, dtau_uw) for next iteration
         Iupw = I[k]
         dS_uw = dS_dw
@@ -140,6 +140,23 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
 
     # NOTE(cmo): Correctly make PsiStar by dividing LambdaStar by chi
     return I, LambdaStar / chi
+
+@njit
+def piecewise_linear_1d_single_up(z, muz, chi, S, Iupw, k):
+    '''Integrate RTE in the upgoing direction for a single step between k-dk and k
+    Linear SC method
+    '''
+    zmu = 1.0 / muz
+
+    # NOTE(cmo): Upgoing ray / to observer
+    dk = -1
+    dtau_uw = 0.5 * (chi[k-dk] + chi[k]) * zmu * np.abs(z[k-dk] - z[k])
+    dS_uw = (S[k-dk] - S[k]) / dtau_uw
+    w = w2(dtau_uw)
+    Ik = Iupw * (1.0 - w[0]) + w[0] * S[k] + w[1] * dS_uw
+    PsiStark = (w[0] - w[1] / dtau_uw) / chi[k]
+
+    return Ik, PsiStark
 
 def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
     """One-dimensional Piecewise linear formal solver
