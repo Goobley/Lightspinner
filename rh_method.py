@@ -53,7 +53,7 @@ class ComputationalTransition:
         The line profile in for each [lambda, mu, toFrom, depthPoint] (lines
         only).
     wphi : np.ndarray
-        The weighting factor for integrating the line profile s.t. 
+        The weighting factor for integrating the line profile s.t.
         \int d\nu d\Omega phi = 1
         at each depth in the atmosphere (lines only).
     alpha : np.ndarray
@@ -107,7 +107,7 @@ class ComputationalTransition:
         self.transModel = trans
         self.atom = compAtom
         self.wavelength = trans.wavelength
-        
+
         if isinstance(trans, AtomicLine):
             self.Aji = trans.Aji
             self.Bji = trans.Bji
@@ -167,7 +167,7 @@ class ComputationalTransition:
         la : Optional[int]=None
             An index into the transition's wavelength array. If provided then
             only the weight for this index is returned.
-        
+
         Returns
         -------
         float or np.ndarray
@@ -275,7 +275,7 @@ class ComputationalTransition:
             # The assumption of CRD can be lifted without changing any code
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
-            phi = self.phi[lt, mu, toFrom, :]
+            phi = self.phi[lt, mu, int(toFrom), :]
             Vij = hc_4pi * self.Bij * phi
             Vji = self.gij * Vij
             Uji = self.Aji / self.Bji * Vji
@@ -478,7 +478,7 @@ class ComputationalAtom:
 
         self.C = np.zeros_like(self.Gamma)
         # NOTE(cmo): Get colllisional rates from each term on the atomic model.
-        # They are added to the correct location in the C matrix so it can be added directly to Gamma. 
+        # They are added to the correct location in the C matrix so it can be added directly to Gamma.
         # i.e. The rate from j to i is put into C[i, j]
         for col in self.atomicModel.collisions:
             col.compute_rates(self.atmos, self.nStar, self.C)
@@ -620,7 +620,7 @@ class Context:
                             atom.chi[t.j] -= chi
                             # NOTE(cmo): Accumulate U, this is like the chi matrix
                             atom.U[t.j] += uv.Uji
-                            # NOTE(cmo): Accumulate onto total opacity and emissivity 
+                            # NOTE(cmo): Accumulate onto total opacity and emissivity
                             # as well as total emissivity in the atom -- needed for Ieff
                             chiTot += chi
                             etaTot += eta
@@ -633,7 +633,7 @@ class Context:
 
                     # NOTE(cmo): Compute formal solution and approximate operator PsiStar
                     iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
-                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays, 
+                    # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays,
                     # but the outgoing rays happen after so we can simply save it every subiteration
                     self.I[la, mu] = iPsi.I[0]
                     # NOTE(cmo): Add contribution to local mean intensity field Jbar
@@ -641,8 +641,8 @@ class Context:
 
                     # NOTE(cmo): Construct Gamma matrix for each atom
                     for atom in self.activeAtoms:
-                        # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using 
-                        # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply 
+                        # NOTE(cmo): Compute Ieff as per (20) in [U01], or (2.20) in [RH92] using
+                        # \sum_j \sum_{i<j} n_j\dagger U_{ji}\dagger is simply
                         # the sum of \eta in the currently active transitions in an atom.
                         # I find (2.20) of RH92 a little confusing here, as I
                         # believe they are working on the assumption of only
@@ -668,7 +668,7 @@ class Context:
 
                             # NOTE(cmo): Add the contributions to the Gamma matrix
                             # Follow (2.19) in [RH92] or (24) in [U01] -- we use the properties
-                            # of the Gamma matrix to construct the off-diagonal components later 
+                            # of the Gamma matrix to construct the off-diagonal components later
                             # and can therefore ignore all terms with a Kronecker delta.
 
                             # NOTE(cmo): The accumulated chi and U matrices per atom are
@@ -693,7 +693,7 @@ class Context:
 
         # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
-        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums 
+        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums
         # of every other entry on their column in Gamma.
         for atom in activeAtoms:
             for k in range(Nspace):
