@@ -528,7 +528,9 @@ class Context:
         equilibrium, using the current version of the Gamma matrix.
     """
 
-    def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration, eqPops: AtomicStateTable, background: Background):
+    def __init__(self, atmos: Atmosphere, spect: SpectrumConfiguration, 
+                 eqPops: AtomicStateTable, background: Background, 
+                 formalSolver: str='piecewise'):
         """
         Parameters
         ----------
@@ -554,6 +556,7 @@ class Context:
         self.spect = spect
         self.background = background
         self.eqPops = eqPops
+        self.formalSolver = formalSolver
 
         self.activeAtoms: List[ComputationalAtom] = []
         for a in spect.radSet.activeAtoms:
@@ -632,7 +635,8 @@ class Context:
                     S = (etaTot + background.eta[la] + background.sca[la] * JDag[la]) / chiTot
 
                     # NOTE(cmo): Compute formal solution and approximate operator PsiStar
-                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S)
+                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chiTot, S, 
+                                               method=self.formalSolver)
                     # NOTE(cmo): Save outgoing intensity -- this is done for both ingoing and outgoing rays,
                     # but the outgoing rays happen after so we can simply save it every subiteration
                     self.I[la, mu] = iPsi.I[0]

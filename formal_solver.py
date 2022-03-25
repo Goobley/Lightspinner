@@ -43,6 +43,110 @@ def w2(dtau):
         w[1] = w[0] - dtau * expdt
     return w
 
+Ntrapez = 0
+Nlin = 0
+Nheun = 0
+
+@njit
+def trapezoidal_1d_impl(muz, toFrom, Istart, z, chi, S):
+    """Formal solver core integration function.
+
+    Follows the trapezoidal method discussed by Gioele Janett.
+
+    Parameters
+    ----------
+    muz : float
+        The cosine of the ray to the normal of the atmospheric slabs.
+    toFrom : bool
+        Whether the ray is upgoing (towards the observer), or downgoing
+        (True/False respectively).
+    Istart : float
+        The incoming intensity at the boundary where the integration starts.
+    z : np.ndarray
+        The height grid (1D array).
+    chi :  np.ndarray
+        The total opacity grid (1D array).
+    S :  np.ndarray
+        The total source function grid (1D array).
+
+    Returns
+    -------
+    I : np.ndarray
+        The intensity at each point on the grid (1D array).
+    PsiStar : np.ndarray
+        The approximate Psi operator (diagonal of the Lambda operator) at
+        each point on the grid (1D array).
+    """
+
+    Nspace = chi.shape[0]
+    # NOTE(cmo): Since a smaller mu "increases" the perceived thickness of the slab, the factor we need to use is 1/mu
+    zmu = 1.0 / muz
+
+    # NOTE(cmo): It is simplest to set up the looping criteria separately, with dk being the loop step
+    if toFrom:
+        # NOTE(cmo): Upgoing ray / to observer
+        dk = -1
+        kStart = Nspace - 1
+        kEnd = 0
+    else:
+        # NOTE(cmo): Downgoing ray / away from observer
+        dk = 1
+        kStart = 0
+        kEnd = Nspace - 1
+
+    # dtau =         average opacity          *             slab thickness
+    dtau  = 0.5 * (chi[kStart] + chi[kStart + dk]) * zmu * np.abs(z[kStart] - z[kStart + dk])
+    ds = np.abs(z[kStart+dk] - z[kStart])
+
+    Iupw = Istart
+    I = np.zeros(Nspace)
+    LambdaStar = np.zeros(Nspace)
+    # NOTE(cmo): Initial point is equation to boundary condition
+    I[kStart] = Iupw
+    LambdaStar[kStart] = 0.0
+
+    for k in range(kStart + dk, kEnd, dk):
+        if dtau < 1e-3:
+            # global Nheun
+            # Nheun += 1
+            # NOTE(cmo): Compute I and LambdaStar
+            halfDtau = 0.5 * dtau
+            I[k] = Iupw * (1.0 - halfDtau * (2.0 - dtau * Iupw)) + halfDtau * (S[k-dk] * (1.0 - dtau * S[k-dk]) + S[k])
+            LambdaStar[k] = halfDtau
+        elif dtau < 5:
+            # global Ntrapez
+            # Ntrapez += 1
+            # NOTE(cmo): Compute I and LambdaStar
+            halfDtau = 0.5 * dtau
+            I[k] = (Iupw * (1.0 - halfDtau) + halfDtau * (S[k-dk] + S[k])) / (1.0 + halfDtau)
+            LambdaStar[k] = dtau / (2.0 + dtau)
+        else:
+            # global Nlin
+            # Nlin += 1
+            # NOTE(cmo): Get analytic integration terms
+            w = w2(dtau)
+            dS_uw = (S[k-dk] - S[k]) / dtau
+
+            # NOTE(cmo): Compute I and LambdaStar
+            # (1.0 - w[0]) = exp(-dtau) as w[0] as w[0] = 1 - exp(-dtau) and this saves us recomputing the exp
+            I[k] = Iupw * (1.0 - w[0]) + w[0] * S[k] + w[1] * dS_uw
+            LambdaStar[k] = w[0] - w[1] / dtau
+
+        # NOTE(cmo): dtau_dw and dS_dw like uw for next iteration
+        dtau_dw = 0.5 * (chi[k] + chi[k+dk]) * zmu * np.abs(z[k] - z[k+dk])
+        
+        # NOTE(cmo): Set values (Iupw, dS_uw, dtau_uw) for next iteration
+        Iupw = I[k]
+        dtau = dtau_dw
+
+    # NOTE(cmo): Do final point (exactly the same in this linear scheme)
+    I[kEnd] = (Iupw * (1.0 - halfDtau) + halfDtau * (S[k-dk] + S[k])) / (1.0 + halfDtau)
+    # I[kEnd] = (Iupw * (1.0 - 0.5*ds*chi[k]) + 0.5*ds*(S[k] * chi[k] + S[k+dk] * chi[k+dk])) / (1.0 + 0.5*ds*chi[k+dk])
+    LambdaStar[kEnd] = dtau / (2.0 + dtau)
+
+    # NOTE(cmo): Correctly make PsiStar by dividing LambdaStar by chi
+    return I, LambdaStar / chi
+
 @njit
 def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
     """Formal solver core integration function.
@@ -141,7 +245,7 @@ def piecewise_1d_impl(muz, toFrom, Istart, z, chi, S):
     # NOTE(cmo): Correctly make PsiStar by dividing LambdaStar by chi
     return I, LambdaStar / chi
 
-def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
+def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S, method='piecewise'):
     """One-dimensional Piecewise linear formal solver
 
     Compute the one-dimensional (plane parallel) formal solution and
@@ -208,5 +312,11 @@ def piecewise_linear_1d(atmos, mu, toFrom, wav, chi, S):
     else:
         Iupw = 0.0
 
-    I, PsiStar = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
+    if method == 'piecewise':
+        I, PsiStar = piecewise_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
+    elif method == 'trapezoidal':
+        I, PsiStar = trapezoidal_1d_impl(atmos.muz[mu], toFrom, Iupw, z, chi, S)
+    else:
+        raise ValueError(f"Unknown formal solver method: {method}")
+    
     return IPsi(I, PsiStar)
