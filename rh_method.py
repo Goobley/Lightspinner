@@ -13,6 +13,14 @@ from background import Background
 from numba import njit
 from utils import voigt_H
 from typing import cast
+from weno4 import weno4
+from scipy.interpolate import interp1d, PchipInterpolator
+
+def interp(xs, xp, fp):
+    # return weno4(xs, xp, fp)
+    # return np.interp(xs, xp, fp)
+    return PchipInterpolator(xp, fp, extrapolate=True)(xs)
+    # return interp1d(xp, fp, kind='quadratic', bounds_error=False, fill_value='extrapolate')(xs)
 
 @dataclass
 class UV:
@@ -219,6 +227,8 @@ class ComputationalTransition:
         if isinstance(self.transModel, AtomicContinuum):
             return
 
+        self.compute_rest_phi(atmos)
+
         sqrtPi = np.sqrt(np.pi)
         aDamp, Qelast = self.transModel.damping(atmos, self.atom.vBroad, self.atom.hPops.n[0])
         phi = np.zeros((self.transModel.Nlambda, atmos.Nrays, 2, atmos.Nspace))
@@ -241,6 +251,50 @@ class ComputationalTransition:
 
         self.wphi = 1.0 / wPhi
         self.phi = phi
+
+    def compute_rest_phi(self, atmos: Atmosphere):
+        """Compute the absorption profile and normalisation coefficient for a
+        spectral line.
+
+        This function computes self.phi and self.wphi if the associated
+        transition is an atomic line. Here phi is a 4D array [lambda, mu,
+        up/down, depth] and wphi an array of the (multiplicative)
+        normalisation coefficient per depth point. The normalisation of this
+        Voigt profile is slightly different to many but is equivalent to RH &
+        Lightweaver in that it isn't normalised to be integrated over
+        frequency, but instead in Doppler units and is therefore a factor of
+        lambda_0 smaller than is often used. This has an effect on the
+        expression used for the U and V coefficients for bound-bound
+        transitions.
+
+        Parameters
+        ----------
+        atmos : Atmosphere
+            The stratified atmosphere over which to compute the line profile.
+        """
+
+        if isinstance(self.transModel, AtomicContinuum):
+            return
+
+        sqrtPi = np.sqrt(np.pi)
+        aDamp, Qelast = self.transModel.damping(atmos, self.atom.vBroad, self.atom.hPops.n[0])
+        phi = np.zeros((self.transModel.Nlambda, atmos.Nspace))
+        wPhi = np.zeros(atmos.Nspace)
+
+        wLambda = self.wlambda()
+
+        for la in range(self.wavelength.shape[0]):
+            v = (self.wavelength[la] - self.lambda0) * Const.CLight / (self.atom.vBroad * self.lambda0)
+            phi[la] = voigt_H(aDamp, v) / (sqrtPi * self.atom.vBroad)
+            wPhi[:] += phi[la, :] * wLambda[la]
+
+        self.rest_wphi = 1.0 / wPhi
+        self.rest_phi = phi
+
+        vProj = np.zeros((atmos.Nrays, atmos.Nspace))
+        for mu in range(atmos.Nrays):
+            vProj[mu, :] = atmos.muz[mu] * atmos.vlos
+        atmos.vlosMu = vProj
 
     def uv(self, la, mu, toFrom) -> UV:
         """Compute the Uji, Vij and Vji coefficients from [RH92] and [U01]
@@ -276,6 +330,45 @@ class ComputationalTransition:
             # here by defining gij as gi/gj * rhoPrd.
             # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
             phi = self.phi[lt, mu, int(toFrom), :]
+            Vij = hc_4pi * self.Bij * phi
+            Vji = self.gij * Vij
+            Uji = self.Aji / self.Bji * Vji
+        else:
+            # NOTE(cmo): (3) of [U01] using the expression for gij given in (26)
+            Vij = self.alpha[lt]
+            Vji = self.gij * Vij
+            Uji = 2.0 * Const.HC / (Const.NM_TO_M * self.wavelength[lt])**3 * Vji
+
+        return UV(Uji=Uji, Vij=Vij, Vji=Vji)
+
+    def uv_rest(self, la) -> UV:
+        """Compute the Uji, Vij and Vji coefficients from [RH92] and [U01]
+        for this transition for an wavelength, angle and direction.
+
+        The bound-bound coefficients appear a factor of \lambda_0 larger than
+        those presented in the previous papers. This term is encompassed in
+        the line profile phi.
+
+        Parameters
+        ----------
+        la : int
+            Index of the current wavelength to be solved (in the global
+            wavelength array).
+        """
+
+        lt = self.lt(la)
+
+        hc_4pi = 0.25 * Const.HC / np.pi
+
+        if self.isLine:
+            # NOTE(cmo): (2) of [U01] under the assumption of CRD (i.e. phi == psi).
+            # Implented as per (26) of [U01]. These appear a factor of
+            # \lambda_0 larger than is correct, but this factor is encompassed
+            # in phi.
+            # The assumption of CRD can be lifted without changing any code
+            # here by defining gij as gi/gj * rhoPrd.
+            # We use the Einstein relation Aji/Bji = (2h*nu**3) / c**2
+            phi = self.rest_phi[lt, :]
             Vij = hc_4pi * self.Bij * phi
             Vji = self.gij * Vij
             Uji = self.Aji / self.Bji * Vji
@@ -432,6 +525,7 @@ class ComputationalAtom:
         self.eta = np.zeros(Nspace)
         self.gij = np.zeros((self.Ntrans, Nspace))
         self.wla = np.zeros((self.Ntrans, Nspace))
+        self.rest_wla = np.zeros((self.Ntrans, Nspace))
         self.U = np.zeros((self.Nlevel, Nspace))
         self.chi = np.zeros((self.Nlevel, Nspace))
 
@@ -449,10 +543,12 @@ class ComputationalAtom:
                 # units (inside wlambda).
                 self.gij[kr, :] = t.Bji / t.Bij
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.wphi / Const.HC
+                self.rest_wla[kr, :] = t.wlambda(t.lt(laIdx)) * t.rest_wphi / Const.HC
             else:
                 self.gij[kr, :] = self.nStar[t.i] / self.nStar[t.j] \
                     * np.exp(-hc_k / self.spect.wavelength[laIdx] / self.atmos.temperature)
                 self.wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
+                self.rest_wla[kr, :] = t.wlambda(t.lt(laIdx)) / self.spect.wavelength[laIdx] / Const.HPlanck
 
     def zero_angle_dependent_vars(self):
         """
@@ -691,6 +787,123 @@ class Context:
                             t.Rij += iPsi.I * uv.Vij * wlamu
                             t.Rji += (uv.Uji + iPsi.I * uv.Vij) * wlamu
 
+        # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
+        # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
+        # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums
+        # of every other entry on their column in Gamma.
+        for atom in activeAtoms:
+            for k in range(Nspace):
+                np.fill_diagonal(atom.Gamma[:, :, k], 0.0)
+                for i in range(atom.Nlevel):
+                    GamDiag = np.sum(atom.Gamma[:, i, k])
+                    atom.Gamma[i, i, k] = -GamDiag
+
+        dJ = np.abs(1.0 - JDag / self.J)
+        dJMax = dJ.max()
+
+        return dJMax
+
+    def formal_sol_gamma_matrices_rest(self):
+        """Perform the formal solution over all specified wavelengths and angles
+        and fill in the Gamma matrix.
+
+        This function applies the method of [RH92] and [U01] to construct the
+        Gamma matrix for the given, possibly overlapping, transitions on the
+        given common wavelength grid, with specified angle quadrature for a
+        plane-parallel atmosphere.
+
+        Returns
+        -------
+        dJ : float
+            The maximum relative update of the local angle-averaged intensity J
+        """
+
+        Nspace = self.atmos.Nspace
+        Nrays = self.atmos.Nrays
+        Nspect = self.spect.wavelength.shape[0]
+        background = self.background
+
+        activeAtoms = self.activeAtoms
+
+        for atom in activeAtoms:
+            atom.setup_Gamma()
+            atom.compute_collisions()
+            atom.Gamma += atom.C
+
+        JDag = np.copy(self.J)
+        self.J.fill(0.0)
+
+        chiTot = np.zeros((Nspect, Nspace))
+        etaTot = np.zeros((Nspect, Nspace))
+        for la, wav in enumerate(self.spect.wavelength):
+            for atom in activeAtoms:
+                atom.setup_wavelength(la)
+                atom.zero_angle_dependent_vars()
+                for t in atom.trans:
+                    if not t.active[la]:
+                        continue
+
+                    uv = t.uv_rest(la)
+                    chiTot[la, :] += atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                    etaTot[la, :] += atom.n[t.j] * uv.Uji
+
+        chiTot += background.chi
+        etaTot += background.eta
+        S = (etaTot + background.sca * JDag) / chiTot
+
+        LambdaStar = np.zeros_like(chiTot)
+        LambdaStarLocalDir = np.zeros_like(chiTot)
+        chi_local = np.zeros_like(chiTot)
+        S_local = np.zeros_like(chiTot)
+        J_rest = np.zeros_like(self.J)
+        I_local = np.zeros_like(self.J)
+
+        for mu in range(Nrays):
+            for toFrom, sign in enumerate([-1.0, 1.0]):
+                # NOTE(cmo): Transposed from "normal" wavelength-first order for interpolation reasons
+                local_wavegrid = self.spect.wavelength[None, :] * (1.0 + sign * self.atmos.vlosMu[mu][:, None] / Const.CLight)
+                for k in range(Nspace):
+                    chi_local[:, k] = interp(local_wavegrid[k, :], self.spect.wavelength, np.ascontiguousarray(chiTot[:, k]))
+                    S_local[:, k] = interp(local_wavegrid[k, :], self.spect.wavelength, np.ascontiguousarray(S[:, k]))
+
+                import pdb
+                # pdb.set_trace()
+                for la, wav in enumerate(self.spect.wavelength):
+                    iPsi = piecewise_linear_1d(self.atmos, mu, toFrom, wav, chi_local[la], S_local[la])
+                    self.I[la, mu] = iPsi.I[0]
+                    self.J[la] += 0.5 * self.atmos.wmu[mu] * iPsi.I
+
+                    LStar = iPsi.PsiStar * chi_local[la]
+                    LambdaStarLocalDir[la, :] = LStar
+
+                    I_local[la, :] = iPsi.I
+                    
+
+                wmu = 0.5 * self.atmos.wmu[mu]
+                for k in range(Nspace):
+                    LStar = interp(self.spect.wavelength, local_wavegrid[k, :], np.ascontiguousarray(LambdaStarLocalDir[:, k]))
+                    LambdaStar[:, k] += LStar * wmu
+                    Jcomponent = interp(self.spect.wavelength, local_wavegrid[k, :], np.ascontiguousarray(I_local[:, k]))
+                    J_rest[:, k] += Jcomponent * wmu
+
+        for la, wav in enumerate(self.spect.wavelength):
+            for atom in self.activeAtoms:
+                atom.setup_wavelength(la)
+                for kr, t in enumerate(atom.trans):
+                    if not t.active[la]:
+                        continue
+
+                    uv = t.uv_rest(la)
+
+                    PStar = LambdaStar[la] / chiTot[la]
+                    Jeff = J_rest[la] - PStar * (atom.n[t.j] * uv.Uji)
+                    chi = atom.n[t.i] * uv.Vij - atom.n[t.j] * uv.Vji
+                    integrand  = (1.0 - chi * PStar) * uv.Uji + uv.Vji * Jeff
+                    atom.Gamma[t.i, t.j] += integrand * atom.rest_wla[kr] * 4.0 * np.pi
+
+                    integrand = uv.Vij * Jeff
+                    atom.Gamma[t.j, t.i] += integrand * atom.rest_wla[kr] * 4.0 * np.pi
+                    
         # NOTE(cmo): "Finish" constructing the Gamma matrices by computing the diagonal.
         # Looking the contributions to the Gamma matrix that contain Kronecker deltas and using U_{i,i} = V_{i,i} = 0,
         # we have \sum_l \Gamma_{l l\prime} = 0, and these terms are simply the additive inverses of the sums
