@@ -73,7 +73,8 @@ def reconfigure_atom(atom: AtomicModel):
 
 def avoid_recursion_eq(a, b) -> bool:
     if isinstance(a, np.ndarray):
-        if not np.all(a == b):
+        #if not np.all(a == b):
+        if len(a) != len(b) or not np.all(a == b):  # MW
             return False
     elif isinstance(a, AtomicModel):
         if a.name != b.name:
