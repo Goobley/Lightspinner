@@ -72,3 +72,4 @@ xEdges = np.insert(xEdges, 0, xEdges[0] - (xEdges[1] - xEdges[0]))
 xEdges = np.insert(xEdges, -1, xEdges[-1] + (xEdges[-1] - xEdges[-2]))
 plt.pcolormesh(xEdges, yEdges, rf.T)
 plt.xlim(853.944, 854.944)
+plt.show() # MW
